@@ -89,7 +89,7 @@ textarea{width:100%;background:#000800;color:#0f0;border:1px solid #0f03;font-fa
 <div id="app" style="max-width:760px;margin:0 auto"></div>
 <script>
 // CALORIS v4 — multi-oscillator Web Audio composition studio
-// designed & built by Claude (Anthropic), 2025
+// designed & built by AJLM and Claude (Anthropic), 2025
 // vanilla JS + Web Audio API · no framework · works offline
 
 const WAVE_GROUPS=[
@@ -639,7 +639,7 @@ function updateDynamicUI(){
 
 function buildApp(){
   const app=document.getElementById('app');
-  app.innerHTML='<h1>CALORIS <span style="font-size:11px;opacity:.5">v4</span></h1><div class="subtitle">multi-oscillator composition studio · Web Audio API</div><div class="credit">designed &amp; built by Claude (Anthropic) · vanilla JS · no framework · works offline</div>';
+  app.innerHTML='<h1>CALORIS <span style="font-size:11px;opacity:.5">v4</span></h1><div class="subtitle">multi-oscillator composition studio · Web Audio API</div><div class="credit">designed &amp; built by AJLM alongside and for Claude (Anthropic) · vanilla JS · no framework · works offline</div>';
   const statusEl=document.createElement('div');statusEl.id='status';statusEl.className='status';statusEl.textContent='Ready. Press Play to initialise audio.';app.appendChild(statusEl);
 
   // Scope
@@ -683,7 +683,7 @@ function buildApp(){
   const expPanel=document.createElement('div');expPanel.className='panel';const expHeadRow=document.createElement('div');expHeadRow.style.cssText='display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#0ff;border-bottom:1px solid #0ff4;padding-bottom:4px;margin-bottom:8px;letter-spacing:.1em';const expTitle=document.createElement('span');expTitle.textContent='EXPORT';const expTabRow=document.createElement('span');expTabRow.style.cssText='display:flex;gap:3px';const expTA=document.createElement('textarea');expTA.readOnly=true;expTA.rows=8;expTA.style.display='none';let curExpTab='json';const updateExp=()=>{expTA.value=curExpTab==='json'?getExportJSON():'// CALORIS v4 JS export\nconst PATCHES='+JSON.stringify(S.configs,null,2)+';';};['JSON','JS'].forEach((lbl,i)=>{const b=document.createElement('button');b.textContent=lbl;b.style.cssText='font-size:10px;'+(i===0?'border-color:#ff0;color:#ff0':'border-color:#ff03;color:#ff03');b.addEventListener('click',()=>{curExpTab=lbl.toLowerCase();Array.from(expTabRow.children).forEach((c,j)=>{c.style.borderColor=j===i?'#ff0':'#ff03';c.style.color=j===i?'#ff0':'#ff03';});updateExp();});expTabRow.appendChild(b);});const expCopyBtn=document.createElement('button');expCopyBtn.textContent='Copy';expCopyBtn.style.cssText='border-color:#ff0;color:#ff0';expCopyBtn.addEventListener('click',()=>{updateExp();if(navigator.clipboard)navigator.clipboard.writeText(expTA.value).then(()=>{expCopyBtn.textContent='✓ Copied';setTimeout(()=>expCopyBtn.textContent='Copy',1500);}).catch(()=>{expTA.style.display='block';expTA.select();});else{expTA.style.display='block';expTA.select();}});const expShowBtn=document.createElement('button');expShowBtn.textContent='Show';expShowBtn.addEventListener('click',()=>{const vis=expTA.style.display!=='none';expTA.style.display=vis?'none':'block';expShowBtn.textContent=vis?'Show':'Hide';if(!vis)updateExp();});expHeadRow.append(expTitle,expTabRow,expCopyBtn,expShowBtn);const expBody=document.createElement('div');expBody.appendChild(expTA);expPanel.append(expHeadRow,expBody);app.appendChild(expPanel);
 
   // Footer
-  const foot=document.createElement('div');foot.className='footer';foot.innerHTML='CALORIS v4 · multi-oscillator Web Audio composition studio · built by Claude (Anthropic) · 2025<br><span style="opacity:.5">ctrl+z undo · click steps: ·→½→■ · click dur: 1→2→4→½ · shift+click melody: +1 oct · drag harmonic bars to sculpt waveform</span>';app.appendChild(foot);
+  const foot=document.createElement('div');foot.className='footer';foot.innerHTML='CALORIS v4 · multi-oscillator Web Audio composition studio · built by AJLM alongside and for Claude (Anthropic) · 2025<br><span style="opacity:.5">ctrl+z undo · click steps: ·→½→■ · click dur: 1→2→4→½ · shift+click melody: +1 oct · drag harmonic bars to sculpt waveform</span>';app.appendChild(foot);
 
   render();
 }
