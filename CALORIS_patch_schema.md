@@ -27,11 +27,16 @@ not the 295KB app — to a composer (human or agent).
 ## sequencer — all fields optional, applied only when present
 
 - `bpm`: number (UI offers 20–300; import does not validate).
-- `stepCount`: steps per bar (UI offers 2–14, 16, 24, 32; import accepts any).
+- `stepCount`: steps per bar for bar 0 and the default for any bar not
+  covered by `meterChanges` (UI offers 2–14, 16, 24, 32; import accepts any,
+  clamped to 1–64).
 - `swing`: ms added to odd steps, 0–80. Applied when `!== undefined`.
 - `stepValueKey`: one of `w h q qd tq e ed te s ts` (whole → triplet-16th).
   Unknown keys are silently ignored.
 - `stepValueMult`: **IGNORED on import** (re-derived from `stepValueKey`). Do not write it.
+- `meterChanges` (v18): optional array of time-signature changes, one
+  entry per change: `{"bar": 0, "num": 4, "den": 4, "steps": 16}`. See
+  **Meter changes (v18)** below for the full contract.
 
 ## key
 
@@ -298,17 +303,21 @@ SCORE system and `renderScoreToWAV` in `CALORIS_v17_11_5_bench_1.html`).
   position, the track is **silent**: gaps are drop-outs, not holds.
 - **Phase follows the global step counter, not the clip start.** A
   pattern is read at `floor(absStep × rateMult) % patternLength`, where
-  `absStep` is the monotonic global step (`bar × stepCount + step`)
-  running from the score's start. A clip boundary swaps *which* pattern
+  `absStep` is the monotonic global step running from the score's
+  start. With a uniform meter that step is `bar × stepCount + step`;
+  with meter changes (v18) it is `meterStepForBar(bar) + step` — see
+  **Meter changes (v18)**. A clip boundary swaps *which* pattern
   is read, never the counter, so a clip that starts mid-pattern enters
   the pattern mid-cycle. Corollary: a pattern of length L sits at its
   own step 0 under a clip starting at bar B only when
-  `(B × stepCount) % L == 0`. At the usual 16 steps per bar, **64-step
+  `(meterStepForBar(B)) % L == 0`. At the usual 16 steps per bar, **64-step
   loops must start on multiples of 4 bars** (bars 0, 4, 8, …) or they
   enter rotated.
 - **End and loop.** `endBar` > 0 cuts everything past it; null = the
   score ends after its last clip. With `loop: true` the global counter
-  wraps at `endBars × stepCount`, which is the only phase reset there is.
+  wraps at the meter total for the end bars (`meterTotalSteps(endBars)`;
+  with a uniform meter that is `endBars × stepCount`), which is the
+  only phase reset there is.
 - **Drums in a score use `steps` and `stepAccents`, not kit `stepData`.**
   Score voices form a virtual `type: 'synth'` patch, so a drum-wave
   voice in a clip plays like a synth-path drum: gates from `steps`,
@@ -316,6 +325,176 @@ SCORE system and `renderScoreToWAV` in `CALORIS_v17_11_5_bench_1.html`).
   `stepData` (with its per-step pitch/decay) belongs to `type: 'kit'`
   patches alone. Author score drums accordingly: pattern in `steps`,
   dynamics in `stepAccents`.
+
+## Meter changes (v18)
+
+Before v18 there was no meter at all: one global `stepCount` (steps per
+bar) and one global `stepValueKey` (duration per step), and every bar
+was assumed to be `stepCount` steps. v18 adds a meter timeline to the
+sequencer, and bar boundaries — in live patch playback, in SCORE
+playback and rendering, in chain timing, in the sequencer info line,
+and in MIDI export — come from that timeline instead of from
+`bar × stepCount`.
+
+- **Field format.** `sequencer.meterChanges` is an array of entries,
+  sorted by bar, each `{"bar": <0-based bar>, "num": <numerator>,
+  "den": <denominator>, "steps": <steps per bar>}`. `bar` is 0-based:
+  the first bar of the piece is bar 0, and a change at `"bar": 2`
+  takes effect from the third bar onward.
+- **How steps are computed.** A bar lasts `num/den` whole notes, which
+  is `num × 4 / den` quarter notes. Divide by quarters per step — the
+  `stepValueMult` for the current `stepValueKey` (`s` = 0.25, `e` = 0.5,
+  `q` = 1, `w` = 4, and so on) — and round to an integer, clamped to
+  1–64. So 4/4 at sixteenths is `4 × 4 / 4 / 0.25 = 16` steps, 3/4 at
+  sixteenths is `3 × 4 / 4 / 0.25 = 12` steps, and 6/8 at eighths is
+  `6 × 4 / 8 / 0.5 = 6` steps. If an entry gives only `steps`, that
+  value is used directly; if it gives `num`/`den`, the computed value
+  wins on import. `num`/`den` are kept alongside `steps` in the file
+  because the UI shows them and MIDI time-signature events need them;
+  after import, stored `steps` are what playback uses.
+- **Bar 0 default.** Normalisation always inserts an entry at bar 0
+  if one is missing, with `steps` equal to the current `stepCount`.
+  `stepCount` itself remains the bar-0 / default bar length: changing
+  it in the UI updates the bar-0 meter entry, and importing a file
+  whose bar-0 meter entry disagrees with its `stepCount` resolves in
+  favour of `stepCount` for bar 0.
+- **Normalisation on import.** Entries are sorted by bar; entries
+  sharing a bar collapse to the last one in the file; entries with no
+  usable `num`/`den` and no finite `steps` are dropped; every surviving
+  `steps` is rounded and clamped to 1–64. The helpers are named
+  `meterStepsAtBar(bar)`, `meterStepForBar(bar)` (steps before bar),
+  `meterBarForAbsStep(absStep)`, and `meterTotalSteps(bars)`.
+- **Files without `meterChanges` behave exactly as before.** Importing
+  a file with no `meterChanges` resets the timeline to a single bar-0
+  entry equal to `stepCount`, so every bar is `stepCount` steps and all
+  the pre-v18 behaviour (including the score phase rule above, with
+  `meterStepForBar(bar) = bar × stepCount`) is unchanged. This was
+  verified against the Greensleeves and Jerusalem patch and score
+  files: all four import clean into v18 and their simulated note
+  sequences are identical to v17.12.6 (Greensleeves 72/32/32 gates,
+  Jerusalem 133/74/74).
+- **What meter does and does not move.** Only bar boundaries move.
+  Patterns stay step-indexed: a pattern is still read at
+  `floor(absStep × rateMult) % patternLength`, with `absStep` the
+  monotonic global step. A meter change mid-pattern does not restart
+  or re-phase the pattern; it only changes where the next bar starts.
+  A score clip starting at a bar where the meter changes starts at
+  that bar's meter offset, not at `startBar × stepCount`. A meter
+  change after the last clip does not affect the loop length, because
+  the loop total is `meterTotalSteps(endBars)` over the bars the
+  score actually covers. A clip spanning a meter change counts its
+  bars in bars, and its steps come from the meter map bar by bar.
+  Chain entries advance by bars, and their durations are the meter
+  steps of the bars they cover, not `bars × stepCount`.
+- **Export.** `getExportJSON` writes `sequencer.meterChanges` only when
+  it differs from a single bar-0 entry equal to `stepCount`; a uniform
+  meter is therefore omitted, exactly as a file without the field
+  would read. The sequencer panel has a Meter section (bar, numerator,
+  denominator, computed steps per row, add/remove) that rebuilds on
+  every render, so an imported timeline shows up in the panel.
+- **Worked example — a piece that changes meter mid-score.** Two
+  bars, sixteenths (`stepValueKey: "s"`), 300 bpm in the test file:
+  bar 0 in 4/4 (16 steps), bar 1 in 3/4 (12 steps), 28 steps total.
+  One lead track, one clip per bar, both looping the same 28-step
+  pattern (melody C–D–E–F–G–A–B cycling):
+
+```json
+"sequencer": {"bpm": 300, "stepCount": 16, "swing": 0, "stepValueKey": "s",
+  "meterChanges": [{"bar": 0, "num": 4, "den": 4, "steps": 16},
+                   {"bar": 1, "num": 3, "den": 4, "steps": 12}]},
+"score": {"loop": true, "endBar": null, "tracks": [{
+  "name": "Lead", "timbre": {"patchKey": "meterpat", "oscIdx": 0},
+  "clips": [{"id": "c1", "loop": {"patchKey": "meterpat", "oscIdx": 0},
+             "startBar": 0, "bars": 1, "fadeIn": 0, "fadeOut": 0},
+            {"id": "c2", "loop": {"patchKey": "meterpat", "oscIdx": 0},
+             "startBar": 1, "bars": 1, "fadeIn": 0, "fadeOut": 0}]}]}
+```
+
+  Verified in v18: the file imports clean; `meterStepsAtBar` gives
+  16, 12, 12…; `meterStepForBar` gives 0, 16, 28; `meterTotalSteps(2)`
+  is 28; simulated score playback gives 28 gates, with bar 1 starting
+  at absolute step 16 on E4 (the fifth note of the cycle); live SCORE
+  playback passes absolute step 28 and keeps playing with no page
+  errors; and its score MIDI export carries time-signature events at
+  tick 0 (4/4) and tick 1920 (3/4, i.e. 16 steps × 120 ticks per
+  sixteenth at tpq 480), with end-of-track at tick 3360 (28 × 120).
+  A four-bar version of the same idea (4/4 for two bars, then 3/4 for
+  two bars: 16, 16, 12, 12 = 56 steps) was verified the same way,
+  including a clip spanning the change and a playhead that wraps
+  from bar 4 back to bar 0.
+
+## MIDI export (v18)
+
+Two exporters, one file format. Both write SMF Type 1, tpq 480, with a
+tempo meta event at tick 0 from `S.bpm` (microseconds per quarter =
+`round(60000000 / bpm)`), track-name metas, pan (CC 10) and volume
+(CC 7, voice volume scaled from its 0–0.15 range to 0–127) like the
+patch exporter, and end-of-track on every track. Ticks per step are
+`480 × stepValueMult` (120 per sixteenth, 240 per eighth, 480 per
+quarter). Velocities are step level × slot velocity × step accent ×
+100, clamped to 1–127, exactly as in patch export; clip fades in score
+export multiply that velocity further (see below).
+
+- **Patch MIDI export (`exportMIDI`, the "Export MIDI" button).**
+  Loop-based, as before: it exports the currently selected patch, one
+  track per oscillator (melody voices first if any exist, otherwise
+  all voices), and repeats the loop `min(128, lcm(steps, melody)) × 4`
+  steps. Note timing is `tick = step × ticks-per-step`; gate ticks are
+  `stepDurs × gateTime × 0.85 × ticks-per-step` (arpeggiated voices use
+  `arpGate` instead). Arps follow the patch exporter (including
+  sub-step arps at rate > 1), and glides are emitted in a second pass:
+  pitch-bend runs between consecutively sounded steps only, rests
+  break the chain, bend range `S.midiBendRange`. **New in v18:**
+  time-signature meta events (`0xFF 0x58`, `nn dd cc bb` with
+  `dd = log2(denominator)`, `cc = 24`, `bb = 8`) are emitted at the
+  tick of every meter change inside the exported range, including
+  bar 0. Note timing is otherwise unchanged from v17.12.6.
+  Patch export still refuses while a score is playing (the live
+  `__score` patch is a virtual patch, not an arrangement) — it now
+  says so and points at Export Score MIDI instead. That refusal is
+  not a gap any more, because score export below does not need
+  playback at all.
+- **Score MIDI export (`exportScoreMIDI`, the "Export Score MIDI"
+  button in the MIDI FILE section).** One pass through the score
+  arrangement, never a loop repetition. It works from `S.score`
+  directly, without requiring playback, and mirrors
+  `renderScoreToWAV`: virtual voices are built from each track's
+  `timbre` plus the active clip's pattern keys (the same PAT list as
+  the score section), clips follow the latest-`startBar`-wins overlap
+  rule, gaps are silence, and the exported range is bars 0 to
+  `endBars − 1`, where `endBars` is `endBar` if set, otherwise the end
+  of the last clip. Bars use the meter map: a bar's steps come from
+  `meterStepsAtBar(bar)`, and a note's tick is
+  `absStep × ticks-per-step`, where `absStep` is the meter offset
+  (`meterStepForBar(bar) + step`). Notes come from the melody slot at
+  `floor(absStep × rateMult) % patternLength` — the same phase rule
+  as live playback, so a clip starting after a meter change phases
+  exactly as it sounds. Kit/drum voices in a score use `stepData`
+  where present (GM drum note, channel 10 unless the voice overrides
+  `midiChannel`); other score voices use `steps` plus `stepAccents`,
+  as in the score section. Muted tracks are skipped; when any track
+  is soloed, only solo tracks are exported. Clip fades scale note
+  velocity linearly (fade-in by distance into the clip, fade-out by
+  distance to its end, both in bars); a fade value of 0 means that
+  step is silent and no note is emitted. Arps are handled like patch
+  export, except `arpPool: "bar"` pools the gated melody notes of the
+  current bar — meter-aware bar boundaries, with the active pattern
+  constant within a bar because clips start on bar boundaries.
+  Glides reuse the patch exporter's two-pass approach per track.
+  Time-signature metas are emitted at the tick of every meter change
+  inside the exported range, including bar 0, so a score that changes
+  meter exports its meter, not just its notes.
+- **How the two differ, in one line.** Patch export exports a loop,
+  repeated; score export exports an arrangement, once. If a piece
+  lives in the SCORE tab, Export Score MIDI is the exporter for it;
+  Export MIDI is for a patch loop, and its time-signature events now
+  describe the patch's meter too.
+- **Determinism note.** Both exporters treat `stepProbs` below 100
+  the way live playback does — probabilistically, with a fresh random
+  draw per export — so a MIDI file is only a faithful record of a
+  piece when every gate is prob 100. Proof-of-concept conversions
+  (Greensleeves, Jerusalem) are prob 100 throughout for exactly this
+  reason.
 
 ## Scoring a piece
 
