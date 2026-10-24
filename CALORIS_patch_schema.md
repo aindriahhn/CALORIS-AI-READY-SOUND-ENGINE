@@ -166,7 +166,10 @@ import. Defaults applied to a voice whose field is missing or invalid:
 - `stepLocks`: `{stepIndex: {filterFreq?, filterQ?, pan?, pitch?}}`, pitch in
   semitones. `null`/`{}` = off.
 - `melody`: array of `{note, octave, vel?, prob?}` or `null`s, read at
-  `step % length`. `note` ∈ sharps list. `vel` 0–1, `prob` 0–100.
+  `step % length`. `note` ∈ sharps list; flat spellings (`Db`, `Eb`, `Gb`,
+  `Ab`, `Bb`, also `Cb`/`Fb`/`E#`/`B#`) are accepted and read as their sharp
+  equivalents, normalised to sharps on import. The same applies to
+  `key.rootNote`. `vel` 0–1, `prob` 0–100.
 - `melodyOctave`: default 3 (editor hint; playback uses each slot's `octave`).
 - `gateTime`: note length as fraction of step (default 1).
 - `rateMult`: polymeter multiplier (default 1).

@@ -505,6 +505,9 @@ const DRUM_PRESETS={
 };
 const STEP_OPTIONS=[2,3,4,5,6,7,8,9,10,11,12,13,14,16,24,32];
 const NOTE_NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const NOTE_ALIASES={'Cb':'B','Db':'C#','Eb':'D#','Fb':'E','Gb':'F#','Ab':'G#','Bb':'A#','E#':'F','B#':'C'};
+const canonNote=n=>(typeof n==='string'&&NOTE_ALIASES[n])?NOTE_ALIASES[n]:n; // enharmonic spellings (flats, E#/B#) read as their sharp equivalents
+const canonPitch=(n,o)=>{if(n==='Cb')return['B',o-1];if(n==='B#')return['C',o+1];return[canonNote(n),o];}; // full pitch: Cb and B# cross the octave boundary, the rest stay in it
 const NOTE_OCTAVES=[0,1,2,3,4,5,6,7];
 const LFO_TARGETS=['pitch','volume','filter'];
 const LFO2_TARGETS=['pitch','volume','filter','pan'];
@@ -561,10 +564,10 @@ const MAX_UNDO=20;
 const N_HARMONICS=16;
 const DEFAULT_HARM_RATIOS=Array(N_HARMONICS).fill(0).map((_,i)=>i+1);
 
-const noteToHz=(note,oct)=>{const s=NOTE_NAMES.indexOf(note);if(s<0)return 440;return parseFloat((440*Math.pow(2,((oct-4)*12+s-9)/12)).toFixed(2));};
-const noteToMidi=(note,oct)=>{const i=NOTE_NAMES.indexOf(note);return(i<0||!isFinite(oct))?null:(oct+1)*12+i;}; // null for an unknown note — callers must handle it
+const noteToHz=(note,oct)=>{const cp=canonPitch(note,oct);const s=NOTE_NAMES.indexOf(cp[0]);if(s<0)return 440;return parseFloat((440*Math.pow(2,((cp[1]-4)*12+s-9)/12)).toFixed(2));};
+const noteToMidi=(note,oct)=>{const cp=canonPitch(note,oct);const i=NOTE_NAMES.indexOf(cp[0]);return(i<0||!isFinite(cp[1]))?null:(cp[1]+1)*12+i;}; // null for an unknown note — callers must handle it
 const hzToNote=hz=>{if(!hz||hz<=0)return null;const semi=Math.round(12*Math.log2(hz/440));const oct=4+Math.floor((semi+9)/12);const ni=(((semi+9)%12)+12)%12; /* v16.1: semitones count from A4, NOTE_NAMES starts at C */const exact=440*Math.pow(2,semi/12);if(Math.abs(1200*Math.log2(hz/exact))>50)return null;return{name:NOTE_NAMES[ni],octave:oct,label:NOTE_NAMES[ni]+oct};};
-const getScaleNotes=(root,key)=>{const ri=NOTE_NAMES.indexOf(root);if(ri<0)return[];return(SCALES[key]||SCALES.chromatic).i.map(i=>NOTE_NAMES[(ri+i)%12]);};
+const getScaleNotes=(root,key)=>{const ri=NOTE_NAMES.indexOf(canonNote(root));if(ri<0)return[];return(SCALES[key]||SCALES.chromatic).i.map(i=>NOTE_NAMES[(ri+i)%12]);};
 const resizeSteps=(steps,n)=>{if(!steps||!steps.length)return Array(n).fill(1);if(steps.length===n)return[...steps];if(steps.length>n)return steps.slice(0,n);return[...steps,...Array(n-steps.length).fill(1)];};
 const resizeMelody=(mel,n)=>{if(!mel)return Array(n).fill(null);if(mel.length===n)return[...mel];if(mel.length>n)return mel.slice(0,n);return[...mel,...Array(n-mel.length).fill(null)];};
 const resizeStepDurs=(durs,n)=>{if(!durs||!durs.length)return Array(n).fill(1);if(durs.length===n)return[...durs];if(durs.length>n)return durs.slice(0,n);return[...durs,...Array(n-durs.length).fill(1)];};
@@ -755,7 +758,7 @@ const CHORD_QUALITIES={
   'dom9':{name:'Dom 9',i:[0,4,7,10,14]},'add9':{name:'Add9',i:[0,4,7,14]},'pow':{name:'Power (5th)',i:[0,7]},
 };
 function chordVoicing(rootNote,quality,inversion,spread,baseOct){
-  const ri=NOTE_NAMES.indexOf(rootNote);if(ri<0)return[];
+  const ri=NOTE_NAMES.indexOf(canonNote(rootNote));if(ri<0)return[];
   const qi=CHORD_QUALITIES[quality]||CHORD_QUALITIES['maj'];
   let semis=qi.i.map(s=>s);
   for(let i=0;i<inversion;i++){semis.push(semis.shift()+12);}
@@ -3239,6 +3242,7 @@ function _normalizePatch(key,p){
     if(!(Number.isFinite(m.volume)&&m.volume>=0))m.volume=.04;
     if(!Number.isFinite(m.pan))m.pan=0;
     ['steps','stepProbs','stepAccents','stepDurs','melody','harmonics','harmonicRatios','harmonicPhases'].forEach(f=>{if(!Array.isArray(m[f]))m[f]=[];});
+    if(m.melody.length)m.melody.forEach(sl=>{if(sl&&typeof sl.note==='string'){const cp=canonPitch(sl.note,sl.octave);sl.note=cp[0];if(Number.isFinite(cp[1]))sl.octave=cp[1];}}); // imported spellings normalised to sharps
     if(!m.harmonics.length)m.harmonics=Array(N_HARMONICS).fill(0).map((_,i)=>i===0?1:0);
     if(!m.harmonicRatios.length)m.harmonicRatios=[...DEFAULT_HARM_RATIOS];
     if(!m.harmonicPhases.length)m.harmonicPhases=Array(N_HARMONICS).fill(0);
@@ -3266,7 +3270,7 @@ function doImport(text){try{const data=JSON.parse(text);const patches=data.patch
   stopWeightedPool();stopChain();if(window.SCORE)window.SCORE.stop();
   S.configs=clean;if(!S.configs[S.currentType]){S.currentType=Object.keys(S.configs)[0];}
   const sq=data.sequencer||{};if(Number.isFinite(sq.bpm)&&sq.bpm>0)S.bpm=Math.max(20,Math.min(300,sq.bpm));if(Number.isFinite(sq.stepCount)&&sq.stepCount>0)S.stepCount=Math.max(1,Math.min(64,Math.round(sq.stepCount)));if(Number.isFinite(sq.swing))S.swing=Math.max(0,sq.swing);if(sq.stepValueKey&&STEP_VALUES.find(s=>s.key===sq.stepValueKey))S.stepValueKey=sq.stepValueKey;
-  if(data.key){S.rootNote=NOTE_NAMES.includes(data.key.rootNote)?data.key.rootNote:'C';S.scaleKey=(data.key.scaleKey&&Object.prototype.hasOwnProperty.call(SCALES,data.key.scaleKey))?data.key.scaleKey:'chromatic';}
+  if(data.key){S.rootNote=NOTE_NAMES.includes(canonNote(data.key.rootNote))?canonNote(data.key.rootNote):'C';S.scaleKey=(data.key.scaleKey&&Object.prototype.hasOwnProperty.call(SCALES,data.key.scaleKey))?data.key.scaleKey:'chromatic';}
   if(data.master){const m=data.master;if(Number.isFinite(m.volume))S.masterVol=Math.max(0,Math.min(1,m.volume));S.clipEnabled=m.clipEnabled!==false;if(m.reverbSize)S.reverbSize=m.reverbSize;if(m.reverbDecay)S.reverbDecay=m.reverbDecay;if(m.reverbWetMaster!==undefined)S.reverbWetMaster=m.reverbWetMaster;if(Number.isFinite(m.drumVol)){S.drumVol=Math.max(0,Math.min(1,m.drumVol));if(drumBus)drumBus.gain.value=S.drumVol;}}
   if(Array.isArray(data.chain)){S.chainList=data.chain.filter(e=>e&&e.key&&S.configs[e.key]).map(e=>({key:e.key,bars:Math.max(1,e.bars|0||4),trans:e.trans==='cut'?'cut':'fade'}));}
   if(window.SCORE)window.SCORE.importScore(data.score);
