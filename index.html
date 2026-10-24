@@ -4712,7 +4712,7 @@ function updateDynamicUI(){
 
 function buildApp(){
   const app=document.getElementById('app');
-  app.innerHTML='<h1>CALORIS <span style="font-size:11px;opacity:.5">v17</span></h1><div class="subtitle">multi-oscillator synth + drum machine + weighted pool \u00b7 Web Audio API</div><div class="credit">designed &amp; \u00b7 vanilla JS \u00b7 no framework \u00b7 works offline \u00b7 works with Claude </div>';
+  app.innerHTML='<h1>CALORIS <span style="font-size:11px;opacity:.5">v18</span></h1><div class="subtitle">multi-oscillator synth + drum machine + weighted pool \u00b7 Web Audio API</div><div class="credit">designed &amp; \u00b7 vanilla JS \u00b7 no framework \u00b7 works offline \u00b7 works with Claude </div>';
   const statusEl=document.createElement('div');statusEl.id='status';statusEl.className='status';statusEl.textContent='Ready. Press Play to initialise audio.';app.appendChild(statusEl);
 
   // Scope
@@ -4924,7 +4924,7 @@ app.appendChild(seqPanel);
   app.appendChild(ioPanel);
 
   const foot=document.createElement('div');foot.className='footer';
-  foot.innerHTML='CALORIS v15.23 \u00b7 arp sub-note glide + gain chain + MIDI I/O \u00b7 made for use with AI \u00b7 2026';
+  foot.innerHTML='CALORIS v18.0 \u00b7 meter changes + score MIDI export \u00b7 made for use with AI \u00b7 2026';
   app.appendChild(foot);
   render();
 }
