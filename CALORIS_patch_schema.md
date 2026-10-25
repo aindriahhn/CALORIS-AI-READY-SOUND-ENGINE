@@ -29,9 +29,10 @@ not the 295KB app — to a composer (human or agent).
 - `bpm`: number (UI offers 20–300; import does not validate).
 - `stepCount`: steps per bar for bar 0 and the default for any bar not
   covered by `meterChanges` (UI offers 2–14, 16, 24, 32; import accepts any,
-  clamped to 1–64).
+  clamped to 1–512 in v19, 1–64 in v18 and earlier).
 - `swing`: ms added to odd steps, 0–80. Applied when `!== undefined`.
-- `stepValueKey`: one of `w h q qd tq e ed te s ts` (whole → triplet-16th).
+- `stepValueKey`: one of `w h q qd tq e ed te s ts f` (whole → triplet-16th,
+  plus v19 `f`, the fine grid — see **Fine grid (v19)** below).
   Unknown keys are silently ignored.
 - `stepValueMult`: **IGNORED on import** (re-derived from `stepValueKey`). Do not write it.
 - `meterChanges` (v18): optional array of time-signature changes, one
@@ -344,8 +345,8 @@ and in MIDI export — come from that timeline instead of from
 - **How steps are computed.** A bar lasts `num/den` whole notes, which
   is `num × 4 / den` quarter notes. Divide by quarters per step — the
   `stepValueMult` for the current `stepValueKey` (`s` = 0.25, `e` = 0.5,
-  `q` = 1, `w` = 4, and so on) — and round to an integer, clamped to
-  1–64. So 4/4 at sixteenths is `4 × 4 / 4 / 0.25 = 16` steps, 3/4 at
+  `q` = 1, `w` = 4, `f` = 1/48, and so on) — and round to an integer, clamped to
+  1–512 in v19 (1–64 in v18 and earlier). So 4/4 at sixteenths is `4 × 4 / 4 / 0.25 = 16` steps, 3/4 at
   sixteenths is `3 × 4 / 4 / 0.25 = 12` steps, and 6/8 at eighths is
   `6 × 4 / 8 / 0.5 = 6` steps. If an entry gives only `steps`, that
   value is used directly; if it gives `num`/`den`, the computed value
@@ -361,7 +362,7 @@ and in MIDI export — come from that timeline instead of from
 - **Normalisation on import.** Entries are sorted by bar; entries
   sharing a bar collapse to the last one in the file; entries with no
   usable `num`/`den` and no finite `steps` are dropped; every surviving
-  `steps` is rounded and clamped to 1–64. The helpers are named
+  `steps` is rounded and clamped to 1–512 in v19 (1–64 in v18 and earlier). The helpers are named
   `meterStepsAtBar(bar)`, `meterStepForBar(bar)` (steps before bar),
   `meterBarForAbsStep(absStep)`, and `meterTotalSteps(bars)`.
 - **Files without `meterChanges` behave exactly as before.** Importing
@@ -422,6 +423,107 @@ and in MIDI export — come from that timeline instead of from
   two bars: 16, 16, 12, 12 = 56 steps) was verified the same way,
   including a clip spanning the change and a playhead that wraps
   from bar 4 back to bar 0.
+
+## Fine grid (v19) and sequencer readout fix (v19, G1)
+
+v19 adds one step value and fixes one readout. Nothing else about the
+contract changes, and every v18 file plays identically in v19.
+
+- **The fine grid.** `stepValueKey: "f"`, label `F`, name "Fine 1/48
+  beat", `stepValueMult` = 1/48 quarter notes per step. In beats
+  (quarter notes): a straight 16th is 1/4, a triplet 16th is 1/6, a
+  32nd is 1/8, a 64th is 1/16. The smallest step dividing all four is
+  1/48 of a beat, so on this grid a straight 16th is 12 steps, a
+  triplet 16th is 8 steps, a 32nd is 6 steps, and a 64th is 3 steps —
+  all integers in one file, with no rhythm stretching. A 4/4 bar at
+  this grid is 192 steps (`4 × 4 / 4 / (1/48) = 192`); step seconds are
+  still `(60 / bpm) × stepValueMult`, so a 4/4 bar still lasts four
+  beats. MIDI ticks per step are `round(480 × 1/48) = 10` exactly, so
+  tick positions do not drift: a note at step N starts at tick
+  `10 × N`, and a gate of D steps lasts `round(10 × D × gateTime ×
+  0.85)` ticks in score MIDI export, exactly as for every other step
+  value.
+- **Caps raised, and why.** The v18 caps of 64 steps per bar and 64
+  for `stepCount` cannot hold a 192-step 4/4 bar, so v19 raises both
+  to 512: `meterStepsFromNumDen`, meter normalisation (computed and
+  steps-only entries, plus the bar-0 fallback), `meterStepsAtBar`,
+  and the `stepCount` clamp on import. 512 covers a 192-step bar with
+  headroom for longer meters (up to an 8/4 bar at the fine grid is
+  384 steps) while still bounding the meter map. No other step value
+  changes meaning: `w h q qd tq e ed te s ts` keep their v18
+  multipliers, and old files import with the same gates, bar
+  boundaries, and MIDI ticks as in v18.
+- **Sequencer readout fix (G1).** In v18 the sequencer info line
+  showed `S.stepCount` steps, which is bar 0's length — so Greensleeves
+  v18, whose first bar is a 2-step 1/8 pickup, read "2 steps" for a
+  tune whose main bars are 12 steps. In v19 the info line shows the
+  main meter steps instead: `meterMainSteps()`, the most common bar
+  length over the first 64 bars of the meter map (the map's tail entry
+  extends, so a short file's main meter still wins). Greensleeves v18
+  now reads "96 bpm · S · 12 steps · meter 1/8 @ bar 1 · 6/8 @ bar 2".
+  Playback bar-boundary logic is unchanged; only the displayed number
+  changes, and a single-meter file reads exactly as before.
+- **Long-pattern editor (v19 render fix).** An oscillator card builds
+  one DOM button per step for its grid, duration, probability, accent,
+  lock-selector, and melody rows. At the fine grid, Bach's patterns are
+  27,456 steps each, so one patch card set would need over two million
+  DOM nodes — before this fix, importing the Bach v19 patch did not
+  return within 30 seconds. In v19, cards for patterns over 2048 steps
+  render a summary line (steps and gate count) instead of those
+  per-step editors; all other oscillator controls still render, and
+  playback, score, and MIDI are untouched. After the fix the same
+  import returns in about 2.6 seconds in the headless harness.
+  Patterns up to 2048 steps render exactly as before. Editing a long
+  pattern's individual steps is therefore done by importing a new JSON
+  in v19, not in the card editor.
+- **Worked example — one bar, four rhythm values, exact.** A proof
+  file at `stepValueKey: "f"`, 120 bpm, one 4/4 bar of 192 steps:
+  straight 16th C4 at step 0 (12 steps), triplet-16th group D4/E4/F4
+  at steps 12/20/28 (8 steps each), 32nd G4 at step 36 (6 steps), 64th
+  A4 at step 42 (3 steps). Verified in v19: the file imports clean,
+  the gates simulate at exactly those steps with those durations,
+  live SCORE playback passes step 192, and its score MIDI export
+  parses back with note-ons at ticks 0, 120, 200, 280, 360, 420 and
+  note-offs at 102, 188, 268, 348, 411, 446 — that is, start tick =
+  step × 10 and gate = round(steps × 10 × 0.85), with no rounding
+  drift.
+
+## Import normalisation (v19): steps/melody alignment and score colour de-duplication
+
+Two import-time fixes, both in the v19 build, neither of which changes
+any file on disk — they fix what the engine does with a file on import,
+so any imported file benefits.
+
+**Steps/melody alignment.** `steps` is the gate grid every consumer
+indexes by (live playback, SCORE playback, WAV render, MIDI export), so
+it is canonical on import. If an oscillator arrives with a melody
+longer than its steps (the reported case: 22 steps, 23 melody slots),
+the melody is tiled/truncated to the steps length:
+`newMelody[i] = oldMelody[i % oldLength]` for `i < steps.length`. The
+first pass then sounds exactly as written, and later passes repeat
+instead of drifting or leaving the extra slot dead. A melody shorter
+than steps is tiled the same way, not null-padded, so a looping melody
+(e.g. 4 slots cycling over 8 steps, as in the worked example below)
+keeps cycling. Per-step arrays are resized to the same length
+(`stepDurs` pad 1, `stepProbs` pad 100, `stepAccents` pad 1; empty arrays
+stay empty, since every consumer already treats a missing entry as its
+default); `stepLocks` at or past the new length are dropped. If `steps`
+is empty and a melody is present, `steps` is filled with gates (1s) to
+the melody length. The in-app steps-length buttons apply the same
+tiling, so editing a pattern length in the editor cannot re-open the
+drift either.
+
+**Score colour de-duplication.** `sanitize()` (which `importScore()`
+calls) now assigns a fresh colour, via `_uniqueColor()` in track order,
+to any track whose colour duplicates an earlier track's colour, and to
+any colourless track. The first track of each colour keeps its colour,
+already-unique colours are never changed, and the file's stored colours
+are untouched. Lanes and VIS both read `track.color`, so after import
+each lane renders in its own colour. Note the palette limit:
+`_uniqueColor()` draws from a 12-colour palette, so de-duplication is
+guaranteed only while the number of distinct colours needed fits the
+palette plus the already-unique stored colours; beyond that it falls
+back to the requested colour.
 
 ## MIDI export (v18)
 

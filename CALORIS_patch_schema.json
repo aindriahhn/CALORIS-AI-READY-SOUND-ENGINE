@@ -1,0 +1,1139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://katabatic-vector.example/caloris-patch-schema-v19.json",
+  "title": "CALORIS patch (v19)",
+  "description": "Composition patch for CALORIS v19 (single-file Web Audio sequencer). Import via Paste/File in the JSON panel. This schema describes the contract as the v19 importer (doImport in CALORIS_v19_0_juno.html) actually accepts it. It is a composer contract, not an import-error predictor: most out-of-range values are clamped, coerced, or silently dropped by the importer rather than failing the import \u2014 the descriptions say which. The only loud import failures are: invalid JSON, missing patches, patches lacking the currently selected key, and a file in which every patch is dropped by normalisation ('No valid patches in file'). Unknown fields at any level are silently ignored by the importer, so additionalProperties is true throughout; a file the importer accepts must not be rejected here merely for carrying an extra field.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "patches"
+  ],
+  "properties": {
+    "version": {
+      "description": "Ignored on import; the exporter writes 5. Informational only.",
+      "type": "number"
+    },
+    "patches": {
+      "description": "REQUIRED. Map of patch-key to patch object. Legacy alias dungeonAudio is accepted by the importer (see below). Must contain the currently selected patch key \u2014 'init' on a fresh boot \u2014 otherwise the import errors loudly. A static schema cannot know the runtime's selected key, so composers must include 'init' unless they know the selected key. An empty object fails loudly ('No valid patches in file') because no patch survives normalisation.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/patch"
+      }
+    },
+    "dungeonAudio": {
+      "description": "Legacy alias for patches, accepted by the importer when patches is absent.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/patch"
+      }
+    },
+    "sequencer": {
+      "$ref": "#/$defs/sequencer"
+    },
+    "key": {
+      "$ref": "#/$defs/key"
+    },
+    "master": {
+      "$ref": "#/$defs/master"
+    },
+    "chain": {
+      "description": "Ordered arrangement (v15.8+). Entries whose key does not match a patch key in patches are silently dropped on import. Omitted or empty: the existing in-memory chain is left unchanged.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/chainEntry"
+      }
+    },
+    "weightedPool": {
+      "description": "Generative pool (v15.8+). Entries whose key does not match a patch key are silently dropped. Omitted: the existing in-memory pool is left unchanged.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/poolEntry"
+      }
+    },
+    "weightedPoolLayer": {
+      "description": "Which pool layer to load into, 1-4. Out-of-range values are ignored by the importer.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4
+    },
+    "score": {
+      "$ref": "#/$defs/score"
+    },
+    "scoreIntent": {
+      "$ref": "#/$defs/scoreIntent"
+    }
+  },
+  "$defs": {
+    "sequencer": {
+      "description": "All fields optional; an omitted section leaves current values alone. Applied only when present.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "bpm": {
+          "description": "Beats per minute. The importer clamps to 20-300 when the value is finite and > 0; it does not validate otherwise.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "stepCount": {
+          "description": "Steps per bar for bar 0 and the default for any bar not covered by meterChanges. The importer rounds and clamps to 1-512 in v19 (1-64 in v18 and earlier).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "swing": {
+          "description": "Milliseconds added to odd steps. The importer floors at 0 and applies the value when it is not undefined; the UI offers 0-80.",
+          "type": "number",
+          "minimum": 0
+        },
+        "stepValueKey": {
+          "description": "Duration of one step. Unknown keys are silently ignored by the importer (the previous step value is kept).",
+          "enum": [
+            "w",
+            "h",
+            "q",
+            "qd",
+            "tq",
+            "e",
+            "ed",
+            "te",
+            "s",
+            "ts",
+            "f"
+          ],
+          "type": "string"
+        },
+        "stepValueMult": {
+          "description": "IGNORED on import; re-derived from stepValueKey. Do not write it. Present here only so a file carrying it (e.g. from getExportJSON) still validates.",
+          "type": "number"
+        },
+        "meterChanges": {
+          "description": "Time-signature timeline (v18; step cap raised to 512 in v19). See the meterChange definition. A file without meterChanges resets the timeline to a single bar-0 entry equal to stepCount, so every bar is stepCount steps and pre-v18 behaviour is unchanged. getExportJSON omits meterChanges when it is a single bar-0 entry equal to stepCount.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/meterChange"
+          }
+        }
+      }
+    },
+    "meterChange": {
+      "description": "One time-signature change (v18). bar is 0-based: bar 0 is the first bar, a change at bar 2 takes effect from the third bar onward. On import, entries are sorted by bar, entries sharing a bar collapse to the last one in the file, entries with no usable num/den and no finite steps are dropped, and every surviving steps value is rounded and clamped to 1-512 in v19 (1-64 in v18 and earlier). If num/den are present and usable, the computed steps value wins on import over a stored steps value: steps = round(num * 4 / den / stepValueMult), where stepValueMult is 0.25 for 's', 0.5 for 'e', 1 for 'q', 4 for 'w', 1/48 for 'f' (v19 fine grid), and so on. num/den are kept alongside steps because the UI shows them and MIDI time-signature events need them; after import, stored steps are what playback uses. Normalisation always inserts a bar-0 entry if one is missing, with steps equal to the current stepCount, and importing a file whose bar-0 meter entry disagrees with its stepCount resolves in favour of stepCount for bar 0. A steps value outside 1-512 in v19 (1-64 in v18 and earlier) is schema-invalid (the contract bound); the importer would clamp it rather than error, so schema-invalid here does not mean import-error.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "bar"
+      ],
+      "properties": {
+        "bar": {
+          "description": "0-based bar index at which this meter takes effect.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "num": {
+          "description": "Time-signature numerator (beats per bar). Must be >= 1 when present.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "den": {
+          "description": "Time-signature denominator (note value of one beat, as a power-of-two note value: 4 = quarter, 8 = eighth). Must be > 0 when present. Note: the importer does not floor den, so a non-integer den is importer-lenient but outside the contract.",
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "steps": {
+          "description": "Steps per bar. If num/den are present and usable, the computed value wins on import. If only steps is given, it is used directly. Contract bound 1-512 in v19 (1-64 in v18 and earlier); the importer rounds and clamps to 1-512 in v19 rather than erroring.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        }
+      }
+    },
+    "key": {
+      "description": "Global key, imported once and applying to every patch. An omitted section leaves current values alone.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "rootNote": {
+          "description": "Default 'C'. Documented spellings are the sharps plus the enharmonic aliases; aliases are normalised to sharps on import (Db->C#, Eb->D#, and so on). Any other value falls back to 'C' in the importer (it does not error).",
+          "enum": [
+            "C",
+            "C#",
+            "D",
+            "D#",
+            "E",
+            "F",
+            "F#",
+            "G",
+            "G#",
+            "A",
+            "A#",
+            "B",
+            "Cb",
+            "Db",
+            "Eb",
+            "Fb",
+            "Gb",
+            "Ab",
+            "Bb",
+            "E#",
+            "B#"
+          ],
+          "type": "string"
+        },
+        "scaleKey": {
+          "description": "Default 'chromatic'. Unknown keys fall back to chromatic in the importer. The enum here is the full set of scales in the v18 engine, which is larger than the subset listed in the human schema document.",
+          "enum": [
+            "chromatic",
+            "major",
+            "minor",
+            "harmonicMinor",
+            "melodicMinor",
+            "dorian",
+            "phrygian",
+            "lydian",
+            "mixolydian",
+            "locrian",
+            "lydianDom",
+            "phrygianDom",
+            "pentaMajor",
+            "pentaMinor",
+            "blues",
+            "bluesMajor",
+            "wholeTone",
+            "diminished",
+            "diminishedWH",
+            "augmented",
+            "bebopDom",
+            "bebopMajor",
+            "doubleHarmonic",
+            "hungarianMinor",
+            "persian",
+            "arabic",
+            "hirajoshi",
+            "insen",
+            "kumoi",
+            "messiaen2",
+            "messiaen3",
+            "messiaen6"
+          ],
+          "type": "string"
+        },
+        "scaleName": {
+          "description": "IGNORED on import; re-derived. Do not write it.",
+          "type": "string"
+        },
+        "notes": {
+          "description": "IGNORED on import; re-derived. Do not write it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "master": {
+      "description": "An omitted section leaves current values alone.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "volume": {
+          "description": "Master volume, 0-1. The v18 importer clamps a finite value to 0-1 (so explicit 0 is honoured in v18; the human document's older '0 coerces to 0.8' note describes an earlier ||-fallback and does not match v18 doImport).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "drumVol": {
+          "description": "Drum bus volume, 0-1. The importer clamps a finite value to 0-1.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "clipEnabled": {
+          "description": "Default true; only explicit false disables clipping.",
+          "type": "boolean"
+        },
+        "reverbSize": {
+          "description": "Applied when truthy.",
+          "type": "number"
+        },
+        "reverbDecay": {
+          "description": "Applied when truthy.",
+          "type": "number"
+        },
+        "reverbWetMaster": {
+          "description": "Applied when not undefined.",
+          "type": "number"
+        }
+      }
+    },
+    "chainEntry": {
+      "description": "One step of a fixed arrangement. bars is coerced to at least 1; trans other than 'cut' coerces to 'fade'.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "key"
+      ],
+      "properties": {
+        "key": {
+          "description": "Must match a patch key in patches; otherwise the entry is silently dropped.",
+          "type": "string"
+        },
+        "bars": {
+          "description": "Bars to play before advancing. Coerced to at least 1.",
+          "type": "number"
+        },
+        "trans": {
+          "description": "Handoff character. Anything other than 'cut' coerces to 'fade'.",
+          "enum": [
+            "fade",
+            "cut"
+          ],
+          "type": "string"
+        }
+      }
+    },
+    "poolEntry": {
+      "description": "One weighted-pool entry. weight is coerced by the importer (weight|0, falling back to 5 when that is 0, floored at 1); higher weight means more likely to be selected.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "key"
+      ],
+      "properties": {
+        "key": {
+          "description": "Must match a patch key in patches; otherwise the entry is silently dropped.",
+          "type": "string"
+        },
+        "weight": {
+          "description": "Selection weight. The importer coerces it (see description); the contract value is >= 1.",
+          "type": "number"
+        }
+      }
+    },
+    "score": {
+      "description": "The arrangement layer: tracks that play simultaneously. On import, SCORE.importScore replaces the whole score when tracks is an array; an absent score leaves the current arrangement untouched. Tracks whose timbre does not resolve to patches[patchKey].oscillators[oscIdx], and clips whose loop does not resolve, are silently dropped. At most 24 tracks survive sanitisation (MAXTRACKS = 24 in v18).",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "loop": {
+          "description": "Whether the score loops. With loop true, the global step counter wraps at meterTotalSteps(endBars).",
+          "type": "boolean"
+        },
+        "endBar": {
+          "description": "End marker: > 0 cuts everything past it; null (or absent/0) means the score ends after its last clip. The importer floors a positive value, otherwise null.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "tracks": {
+          "description": "At most 24 survive sanitisation; extras are dropped.",
+          "type": "array",
+          "maxItems": 24,
+          "items": {
+            "$ref": "#/$defs/scoreTrack"
+          }
+        }
+      }
+    },
+    "scoreOscRef": {
+      "description": "A reference to an oscillator, by patch key + oscillator index, never by value. It resolves as patches[patchKey].oscillators[oscIdx] in the same file. The schema cannot check that the reference resolves; the importer drops tracks/clips whose reference does not resolve.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "patchKey",
+        "oscIdx"
+      ],
+      "properties": {
+        "patchKey": {
+          "description": "Key of a patch in patches.",
+          "type": "string"
+        },
+        "oscIdx": {
+          "description": "Index into that patch's oscillators array.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "scoreTrack": {
+      "description": "One score track = one instrument. The track voice takes its sound (wave, ADSR, filter, effects, base volume) from its timbre oscillator; while a clip is active, the pattern keys are copied from the clip's oscillator (steps, stepData, stepDurs, stepProbs, stepAccents, stepLocks, melody, melodyOctave, gateTime, rateMult, freq, and the arp* fields). Everything not in that list stays the timbre's.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "timbre"
+      ],
+      "properties": {
+        "id": {
+          "description": "Track id (opaque).",
+          "type": "string"
+        },
+        "name": {
+          "description": "Track label.",
+          "type": "string"
+        },
+        "color": {
+          "description": "CSS colour for the track lane.",
+          "type": "string"
+        },
+        "muted": {
+          "description": "Muted tracks are silent (and are skipped by score MIDI export).",
+          "type": "boolean"
+        },
+        "solo": {
+          "description": "When any track is soloed, only solo tracks sound (and only solo tracks are exported by score MIDI).",
+          "type": "boolean"
+        },
+        "locked": {
+          "description": "Locked flag (UI).",
+          "type": "boolean"
+        },
+        "timbre": {
+          "$ref": "#/$defs/scoreOscRef"
+        },
+        "clips": {
+          "description": "Clips on this track. They are sorted by startBar on import. Where clips overlap, the one with the latest startBar wins. Where no clip covers a position, the track is silent: gaps are drop-outs, not holds.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scoreClip"
+          }
+        }
+      }
+    },
+    "scoreClip": {
+      "description": "One placed loop on a score track. The clip's loop oscillator supplies the pattern; the track's timbre supplies the sound. startBar is coerced to >= 0 integer, bars to >= 1 integer, fadeIn/fadeOut to >= 0 (in bars, scaling track volume linearly; 0 = hard edge). A clip starting at a bar where the meter changes starts at that bar's meter offset (meterStepForBar), not at startBar x stepCount. Pattern phase follows the global step counter, not the clip start: a pattern is read at floor(absStep x rateMult) % patternLength, so a clip that starts mid-pattern enters mid-cycle.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "loop"
+      ],
+      "properties": {
+        "id": {
+          "description": "Clip id (opaque).",
+          "type": "string"
+        },
+        "loop": {
+          "$ref": "#/$defs/scoreOscRef"
+        },
+        "startBar": {
+          "description": "Position in bars, integer >= 0. Coerced by sanitisation.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "bars": {
+          "description": "Length in bars, integer >= 1. Coerced by sanitisation.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "fadeIn": {
+          "description": "Fade-in length in bars. In score MIDI export, fades scale note velocity linearly; a fade value of 0 at a step means that step is silent and no note is emitted.",
+          "type": "number",
+          "minimum": 0
+        },
+        "fadeOut": {
+          "description": "Fade-out length in bars.",
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "scoreIntent": {
+      "description": "The composer's statement of intent. NEVER READ BY THE IMPORTER: it is invisible to playback and cannot break an import, and it must not be required for a file to validate as playable. By composer convention (not by import), every submission should include it, answered in concrete musical terms \u2014 a scoreIntent that merely restates the chain order is a failed scoreIntent by that convention, not an import failure. Extra fields (e.g. piece, score) are allowed; real v18 files carry them.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "arc": {
+          "description": "3-7 stage words naming the energy curve, e.g. ['low','build','peak','break','resolve']. Each stage should map to a patch or chain entry (composer convention).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "motive": {
+          "description": "The recurring musical idea, and how it changes across the piece.",
+          "type": "string"
+        },
+        "tension": {
+          "description": "Where expectation builds, and by what means.",
+          "type": "string"
+        },
+        "release": {
+          "description": "Where it breaks, and how.",
+          "type": "string"
+        },
+        "silence": {
+          "description": "What the quiet moments mean \u2014 which rests are compositional, not accidental.",
+          "type": "string"
+        },
+        "loop": {
+          "description": "How the end composes back into the beginning \u2014 or why the hard restart is deliberate.",
+          "type": "string"
+        }
+      }
+    },
+    "patch": {
+      "description": "One patch: a group of voices that play together. The import normalises every patch through _normalizePatch: oscillators must be an array, and it is filtered to plain-object voices, each run through makeOsc. A patch is dropped (counted in the 'N invalid patches skipped' status) when its oscillators array is missing, is empty, or contains no plain-object voices; if every patch drops, the import errors loudly with 'No valid patches in file'. A patch that survives with at least one voice is kept, even if other voices were dropped.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "oscillators"
+      ],
+      "properties": {
+        "type": {
+          "description": "Patch routing. Missing or any value other than 'kit' coerces to 'synth' in the importer (a kit's drums lose the drum bus if the patch is not typed 'kit').",
+          "enum": [
+            "synth",
+            "kit"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "description": "Tab label. Defaults to the patch key when missing or not a string.",
+          "type": "string"
+        },
+        "color": {
+          "description": "CSS colour for the tab. Defaults to '#00ff00' when missing or not a string.",
+          "type": "string"
+        },
+        "oscillators": {
+          "description": "REQUIRED, non-empty after filtering to plain objects (see patch description). No individual voice field is required: makeOsc supplies defaults for every field, so no single missing or invalid voice field can fail the import. This corrects the stale v14 machine schema, which wrongly required wave, volume, steps, and (for tonal voices) freq.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/oscillator"
+          }
+        }
+      }
+    },
+    "melodySlot": {
+      "description": "One melody slot, read cyclically at step % melody.length. A null slot is a rest in the melody array (the array may contain nulls).",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "note",
+        "octave"
+      ],
+      "properties": {
+        "note": {
+          "description": "Documented spellings: the 12 sharps, plus the enharmonic aliases Cb, Db, Eb, Fb, Gb, Ab, Bb, E# and B#. Aliases are normalised to sharps on import by _normalizePatch (canonPitch): Db->C#, Eb->D#, and so on, with Cb crossing down an octave (Cb4 -> B3) and B# crossing up an octave (B#3 -> C4); the rest stay in their octave. A truly unknown name (e.g. 'H') is schema-invalid, but importer-lenient: noteToHz falls back to 440 Hz and noteToMidi returns null, so the import does not error. The old v14 schema's sharps-only enum was therefore too narrow for v18.",
+          "enum": [
+            "C",
+            "C#",
+            "D",
+            "D#",
+            "E",
+            "F",
+            "F#",
+            "G",
+            "G#",
+            "A",
+            "A#",
+            "B",
+            "Cb",
+            "Db",
+            "Eb",
+            "Fb",
+            "Gb",
+            "Ab",
+            "Bb",
+            "E#",
+            "B#"
+          ],
+          "type": "string"
+        },
+        "octave": {
+          "description": "Octave number, e.g. 4 for the octave containing middle C. Must be an integer in the contract; the importer only rewrites it when it is finite (for Cb/B# normalisation).",
+          "type": "integer"
+        },
+        "vel": {
+          "description": "Per-note velocity, 0-1.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "prob": {
+          "description": "Per-note probability, 0-100. Values at or above 100 are always on.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        }
+      }
+    },
+    "kitStep": {
+      "description": "One step of a kit voice's stepData. stepData is auto-created when missing or the wrong length \u2014 omit it entirely in authored files.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "on": {
+          "description": "Gate: 0 = rest, 1 = hit.",
+          "enum": [
+            0,
+            1
+          ],
+          "type": "integer"
+        },
+        "vel": {
+          "description": "Velocity, 0-1.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "pitch": {
+          "description": "Pitch offset in semitones.",
+          "type": "number"
+        },
+        "decay": {
+          "description": "Decay multiplier, > 0.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "stepLock": {
+      "description": "Per-step parameter lock, keyed by step index in the oscillator's stepLocks object. null or {} means off.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "filterFreq": {
+          "description": "Locked filter frequency in Hz, > 0.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "filterQ": {
+          "description": "Locked filter Q, > 0.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "pan": {
+          "description": "Locked pan, -1..1.",
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "pitch": {
+          "description": "Locked pitch offset in semitones.",
+          "type": "number"
+        }
+      }
+    },
+    "resonance": {
+      "description": "Karplus-Strong waveguide resonator loop after the envelope. A null or non-object value disables it; drums and sample voices always get null. dryWet is accepted as an alias for mix.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "description": "False disables; when the object is present, the engine defaults to true (enabled !== false).",
+          "type": "boolean"
+        },
+        "type": {
+          "description": "Resonator type. Unknown values coerce to 'string'.",
+          "enum": [
+            "string",
+            "bar",
+            "membrane"
+          ],
+          "type": "string"
+        },
+        "damping": {
+          "description": "Loop lowpass damping, 0..1; higher = darker, shorter highs. The engine clamps to 0..1.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "feedback": {
+          "description": "Per-period loop gain at 220 Hz, scaled with pitch so ring time is pitch-independent. The engine clamps to 0..0.995.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.995
+        },
+        "mix": {
+          "description": "Resonator mix, 0..1. The engine clamps to 0..1.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "dryWet": {
+          "description": "Alias for mix, accepted by the engine when mix is absent.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "trackPitch": {
+          "description": "Whether the resonator tracks pitch. The engine defaults to true (trackPitch !== false).",
+          "type": "boolean"
+        }
+      }
+    },
+    "oscillator": {
+      "description": "One voice. NO field is required: makeOsc supplies a default for every field (wave 'square', freq 220, volume 0.04, pan 0, steps of 8 ones, melody [], gateTime 1, rateMult 1, ADSR attack 0.005 / decay 0.1 / sustain 0.8 / release 0.15, and so on), and _normalizePatch then coerces non-array steps/stepProbs/stepAccents/stepDurs/melody/harmonics/harmonicRatios/harmonicPhases to [], fills empty harmonics/harmonicRatios/harmonicPhases with their single-fundamental defaults, strips sampleBuffer, and forces drum/sample voices' resonance to null. Unknown wave strings fall back to a sine at playback (no crash). A voice that is not a plain object is dropped by _normalizePatch; if no voice survives, the patch is dropped (see patch).",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "wave": {
+          "description": "Waveform. Native: sine, square, sawtooth, triangle. Periodic tables: pulse25, pulse12, pulse10, organ, organ2, strings, brass, clarinet, flute, soft. custom is built from harmonics[16], harmonicRatios[16], harmonicPhases[16]; non-integer ratios produce an inharmonic partial bank. noise-white and noise-pink are looped noise buffers (freq ignored). drum-kick/snare/hat/cymbal/tom/clap/rim are one-shot drum synths with built-in presets when drum-shaping fields are omitted. sample needs a decoded sampleBuffer, which cannot arrive via JSON \u2014 do not use it. Unknown wave strings fall back to a default sine at playback.",
+          "enum": [
+            "sine",
+            "square",
+            "sawtooth",
+            "triangle",
+            "pulse25",
+            "pulse12",
+            "pulse10",
+            "organ",
+            "organ2",
+            "strings",
+            "brass",
+            "clarinet",
+            "flute",
+            "soft",
+            "custom",
+            "noise-white",
+            "noise-pink",
+            "drum-kick",
+            "drum-snare",
+            "drum-hat",
+            "drum-cymbal",
+            "drum-tom",
+            "drum-clap",
+            "drum-rim",
+            "sample"
+          ],
+          "type": "string"
+        },
+        "freq": {
+          "description": "Base frequency in Hz. Non-finite or <= 0 coerces to 220 in _normalizePatch; noise/drum voices ignore it. Not required, despite the stale v14 schema's claim.",
+          "type": "number"
+        },
+        "volume": {
+          "description": "Linear gain; 0.01-0.1 per voice is sane in practice. Non-finite or < 0 coerces to 0.04 in _normalizePatch.",
+          "type": "number"
+        },
+        "label": {
+          "description": "Voice label.",
+          "type": "string"
+        },
+        "muted": {
+          "description": "Whether the voice is muted.",
+          "type": "boolean"
+        },
+        "pan": {
+          "description": "Pan, -1..1. Non-finite coerces to 0.",
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "gainTrim": {
+          "description": "Gain trim in dB, -24..12, applied after ADSR before effects.",
+          "type": "number",
+          "minimum": -24,
+          "maximum": 12
+        },
+        "steps": {
+          "description": "Gate array: 0 = rest, nonzero = hit. Coerced to [] if not an array, then auto-resized to stepCount at render/playback (pads with 1s, truncates).",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "stepProbs": {
+          "description": "Per-step probability, 0-100 (default 100). Coerced to [] if not an array.",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "stepAccents": {
+          "description": "Per-step velocity multiplier (default 1). Coerced to [] if not an array.",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "stepDurs": {
+          "description": "Per-step duration multiplier (default 1). Coerced to [] if not an array.",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "stepLocks": {
+          "description": "Per-step parameter locks, keyed by step index, or null/{} for off. Coerced to [] if not an array by _normalizePatch's array check (a null value is then treated as off downstream).",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/$defs/stepLock"
+          }
+        },
+        "stepData": {
+          "description": "Kit voices only (type: 'kit' patches): per-step {on, vel, pitch, decay}. Auto-created when missing or the wrong length \u2014 omit it entirely in authored files. A score is not a kit (its virtual patch is type: 'synth'), so drums in a score use steps and stepAccents, not stepData \u2014 except that score MIDI export reads stepData where present for kit/drum voices.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/kitStep"
+          }
+        },
+        "melody": {
+          "description": "Melody slots, read at step % melody.length, or nulls (rests). Coerced to [] if not an array. Imported spellings are normalised to sharps (see melodySlot).",
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/melodySlot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "melodyOctave": {
+          "description": "Editor hint; playback uses each slot's own octave. Default 3.",
+          "type": "integer"
+        },
+        "gateTime": {
+          "description": "Note length as a fraction of a step. Default 1.",
+          "type": "number"
+        },
+        "rateMult": {
+          "description": "Polymeter multiplier. Default 1. Pattern phase is floor(absStep x rateMult) % patternLength.",
+          "type": "number"
+        },
+        "attack": {
+          "description": "ADSR attack in seconds. Default 0.005.",
+          "type": "number",
+          "minimum": 0
+        },
+        "decay": {
+          "description": "ADSR decay in seconds. Default 0.1.",
+          "type": "number",
+          "minimum": 0
+        },
+        "sustain": {
+          "description": "ADSR sustain level, 0-1. Default 0.8; 0 is honoured (pluck/decay-only).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "release": {
+          "description": "ADSR release in seconds. Default 0.15.",
+          "type": "number",
+          "minimum": 0
+        },
+        "filterEnabled": {
+          "description": "Whether the filter is enabled. Default false.",
+          "type": "boolean"
+        },
+        "filterType": {
+          "description": "Filter type. Default 'lowpass'.",
+          "enum": [
+            "lowpass",
+            "highpass",
+            "bandpass",
+            "notch",
+            "peaking"
+          ],
+          "type": "string"
+        },
+        "filterFreq": {
+          "description": "Filter frequency in Hz. Default 800.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "filterQ": {
+          "description": "Filter Q. Default 1.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "delayTime": {
+          "description": "Delay time in seconds. Default 0 (off).",
+          "type": "number",
+          "minimum": 0
+        },
+        "delayFeedback": {
+          "description": "Delay feedback. Default 0.",
+          "type": "number",
+          "minimum": 0
+        },
+        "delayWet": {
+          "description": "Delay wet level. Default 0.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reverbSend": {
+          "description": "Reverb send level. Default 0.",
+          "type": "number",
+          "minimum": 0
+        },
+        "chorusEnabled": {
+          "description": "Whether chorus/flanger is enabled. Default false.",
+          "type": "boolean"
+        },
+        "chorusType": {
+          "description": "Chorus type. Default 'chorus'.",
+          "enum": [
+            "chorus",
+            "flanger"
+          ],
+          "type": "string"
+        },
+        "chorusRate": {
+          "description": "Chorus rate. Default 0.8.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "chorusDepth": {
+          "description": "Chorus depth. Default 15.",
+          "type": "number",
+          "minimum": 0
+        },
+        "chorusFeedback": {
+          "description": "Chorus feedback. Default 0.",
+          "type": "number"
+        },
+        "chorusWet": {
+          "description": "Chorus wet level. Default 0.5.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "distEnabled": {
+          "description": "Whether distortion is enabled. Default false.",
+          "type": "boolean"
+        },
+        "distType": {
+          "description": "Distortion type. Default 'soft'.",
+          "enum": [
+            "soft",
+            "hard",
+            "foldback"
+          ],
+          "type": "string"
+        },
+        "distDrive": {
+          "description": "Distortion drive. Default 50.",
+          "type": "number",
+          "minimum": 0
+        },
+        "distWet": {
+          "description": "Distortion wet level. Default 1.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "unisonCount": {
+          "description": "Unison voice count, 1-8. Default 1.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "unisonDetune": {
+          "description": "Unison detune in cents. Default 20.",
+          "type": "number",
+          "minimum": 0
+        },
+        "lfoRate": {
+          "description": "LFO 1 rate. Default 0.1.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "lfoDepth": {
+          "description": "LFO 1 depth. Default 2.",
+          "type": "number",
+          "minimum": 0
+        },
+        "lfoTarget": {
+          "description": "LFO 1 target. Default 'pitch'.",
+          "enum": [
+            "pitch",
+            "volume",
+            "filter"
+          ],
+          "type": "string"
+        },
+        "lfo2Rate": {
+          "description": "LFO 2 rate. Default 0.3.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "lfo2Depth": {
+          "description": "LFO 2 depth. Default 0.",
+          "type": "number",
+          "minimum": 0
+        },
+        "lfo2Target": {
+          "description": "LFO 2 target. Default 'pitch'.",
+          "enum": [
+            "pitch",
+            "volume",
+            "filter",
+            "pan"
+          ],
+          "type": "string"
+        },
+        "fmEnabled": {
+          "description": "Whether FM is enabled. FM applies only when fmEnabled and fmDepth > 0.",
+          "type": "boolean"
+        },
+        "fmRatio": {
+          "description": "FM ratio. Default 2.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "fmDepth": {
+          "description": "FM depth in Hz. Default 0.",
+          "type": "number",
+          "minimum": 0
+        },
+        "glide": {
+          "description": "Portamento time in seconds. Default 0 (off).",
+          "type": "number",
+          "minimum": 0
+        },
+        "harmonics": {
+          "description": "Custom-wave harmonic amplitudes (16 values); used when wave is 'custom'. Defaults to a single fundamental [1, 0, ..., 0] when empty.",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "harmonicRatios": {
+          "description": "Custom-wave harmonic ratios (16 values). Defaults to [1, 2, ..., 16] when empty.",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "harmonicPhases": {
+          "description": "Custom-wave harmonic phases (16 values). Defaults to all zeros when empty.",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "resonance": {
+          "$ref": "#/$defs/resonance"
+        },
+        "drumTone": {
+          "description": "Drum tone frequency. Falls back to the built-in preset for the drum wave when omitted. Null is allowed (preset applies).",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "drumToneEnd": {
+          "description": "Drum tone end frequency. Falls back to the preset when omitted. Null is allowed.",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "drumToneTime": {
+          "description": "Drum tone sweep time. Falls back to the preset when omitted. Null is allowed.",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "drumNoise": {
+          "description": "Drum noise amount. Default 0 (preset applies for drum waves when fields are not explicitly set).",
+          "type": "number",
+          "minimum": 0
+        },
+        "drumNoiseFreq": {
+          "description": "Drum noise frequency. Falls back to the preset when omitted. Null is allowed.",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "drumNoiseQ": {
+          "description": "Drum noise Q. Default 1.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "arpEnabled": {
+          "description": "Whether the arpeggiator is enabled. Default false.",
+          "type": "boolean"
+        },
+        "arpMode": {
+          "description": "Arpeggiator mode. The engine special-cases 'random'; other modes order the arp pool as built by getArpSequence. The enum here is the documented set carried over from the prior machine schema; an undocumented mode is importer-lenient (it does not error) but its ordering is not part of the contract.",
+          "enum": [
+            "up",
+            "down",
+            "up-down",
+            "down-up",
+            "random",
+            "chord",
+            "as-played"
+          ],
+          "type": "string"
+        },
+        "arpPool": {
+          "description": "Arp pool: 'all' (default) arpeggiates all gated melody notes; 'bar' arpeggiates only the gated melody notes of the current bar, so the arpeggio follows chord changes written into melody.",
+          "enum": [
+            "all",
+            "bar"
+          ],
+          "type": "string"
+        },
+        "arpOctaves": {
+          "description": "Arp octave span, 1-4. Default 1.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "arpRate": {
+          "description": "Arp rate multiplier. Default 1; > 1 gives sub-step arps.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "arpGate": {
+          "description": "Arp note gate as a fraction of a step. Default 0.5.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "midiChannel": {
+          "description": "MIDI channel, 1-16, or null for auto (oscillator index + 1). Non-finite coerces to null.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 16
+        },
+        "midiNote": {
+          "description": "Fixed MIDI note number, 0-127, or null for melody/freq-derived notes; for drum voices, the fixed GM note. Non-finite coerces to null.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 127
+        },
+        "midiOnlyVoice": {
+          "description": "When true, the voice is silent in Web Audio and is MIDI-out only.",
+          "type": "boolean"
+        },
+        "midiPbEnabled": {
+          "description": "When true, pitch bend is sent from LFO pitch modulation.",
+          "type": "boolean"
+        },
+        "sampleBuffer": {
+          "description": "STRIPPED on import (it cannot arrive via JSON anyway). Do not write it.",
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

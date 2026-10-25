@@ -1,3 +1,4 @@
+<!-- v19.0: FINE GRID — new step value 'f' (mult 1/48 quarter = 1/48 beat): straight 16ths (12 steps), triplet 16ths (8), 32nds (6) and 64ths (3) all land on integer steps in one file, so no rhythm stretching is needed. MIDI ticks per step = 480/48 = 10 exactly. Step/meter caps raised 64 -> 512 (a 4/4 bar at the fine grid is 192 steps). READOUT FIX (G1) — the sequencer info line now shows the main meter steps (mode over the first 64 bars of the meter map) instead of bar 0's length, so a pickup-first file no longer reads as its pickup bar. Playback bar-boundary logic unchanged. RENDER FIX — oscillator cards for patterns over 2048 steps render a summary instead of one DOM button per step (grid/dur/prob/accent/lock/melody editors), which made the 27,456-step Bach patterns unrenderable (import timed out at 30s before the fix); playback, score and MIDI paths are untouched, and patterns up to 2048 steps render exactly as before. Sibling of v18; no other files changed. -->
 <!-- v18.0: METER CHANGES — sequencer.meterChanges, a bar-sorted timeline of {bar, num, den, steps}; bar boundaries in live playback, SCORE playback/render and chain timing now come from the meter map (meterStepsAtBar / meterStepForBar / meterBarForAbsStep) instead of bar*stepCount. Patterns stay step-indexed: only bar boundaries move. SCORE MIDI EXPORT — exportScoreMIDI() bounces the score arrangement to SMF Type 1 (one pass, tempo + time-signature metas, fades as velocity, mutes/solos honoured); patch exportMIDI() now also emits time-signature metas and no longer needs to refuse score mode, since score export is its own function. Sibling of v17.12.6; no other files changed. -->
 <!DOCTYPE html>
 <html lang="en">
@@ -36,7 +37,7 @@
      loops complete their own cycles; UI playheads follow each voice's live phase (osc._phase). -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CALORIS v18.0 – Meter Changes + Score MIDI Export</title>
+<title>CALORIS v19.0 – Fine Grid + Sequencer Readout Fix</title>
 <style>
 :focus-visible{outline:2px solid #0ff !important;outline-offset:2px;border-radius:2px}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -525,6 +526,7 @@ const STEP_VALUES=[
   {key:'te',label:'3E',mult:1/3, name:'Triplet E'},
   {key:'s', label:'S', mult:0.25,name:'Sixteenth'},
   {key:'ts',label:'3S',mult:1/6, name:'Triplet 16'},
+  {key:'f', label:'F', mult:1/48,name:'Fine 1/48 beat'},
 ];
 const SCALES={
   chromatic:     {name:'Chromatic',        cat:'Western',   i:[0,1,2,3,4,5,6,7,8,9,10,11]},
@@ -2803,7 +2805,7 @@ function stopAllAudio(){stopSeq();stopWeightedPool();stopChain();if(window.SCORE
 function meterStepsFromNumDen(num,den,stepValueKey){
   const sv=STEP_VALUES.find(s=>s.key===stepValueKey)||STEP_VALUES[5];
   const mult=(sv&&sv.mult)||0.25;
-  return Math.max(1,Math.min(64,Math.round(num*4/den/mult)));
+  return Math.max(1,Math.min(512,Math.round(num*4/den/mult)));
 }
 function normalizeMeterChanges(list,stepCount,stepValueKey){
   const out=[],byBar={};
@@ -2815,7 +2817,7 @@ function normalizeMeterChanges(list,stepCount,stepValueKey){
     if(Number.isFinite(e.num)&&Number.isFinite(e.den)&&e.num>=1&&e.den>0){
       num=Math.floor(e.num);den=e.den;steps=meterStepsFromNumDen(num,den,stepValueKey);
     } else if(Number.isFinite(e.steps)){
-      steps=Math.max(1,Math.min(64,Math.round(e.steps)));
+      steps=Math.max(1,Math.min(512,Math.round(e.steps)));
     }
     if(steps==null)return;
     byBar[bar]={bar:bar,steps:steps};
@@ -2823,14 +2825,14 @@ function normalizeMeterChanges(list,stepCount,stepValueKey){
   });
   Object.keys(byBar).forEach(k=>out.push(byBar[k]));
   out.sort((a,b)=>a.bar-b.bar);
-  if(!out.length||out[0].bar!==0)out.unshift({bar:0,steps:Math.max(1,Math.min(64,Math.round(stepCount)||8))});
+  if(!out.length||out[0].bar!==0)out.unshift({bar:0,steps:Math.max(1,Math.min(512,Math.round(stepCount)||8))});
   return out;
 }
 function meterList(){return Array.isArray(S.meterChanges)&&S.meterChanges.length?S.meterChanges:[{bar:0,steps:S.stepCount}];}
 function meterStepsAtBar(bar){
   const list=meterList();let steps=S.stepCount;
   list.forEach(e=>{if(e.bar<=bar)steps=e.steps;});
-  return Math.max(1,Math.min(64,steps|0));
+  return Math.max(1,Math.min(512,steps|0));
 }
 function meterStepForBar(bar){
   let total=0;
@@ -3545,6 +3547,25 @@ function _normalizePatch(key,p){
     if(!Number.isFinite(m.pan))m.pan=0;
     ['steps','stepProbs','stepAccents','stepDurs','melody','harmonics','harmonicRatios','harmonicPhases'].forEach(f=>{if(!Array.isArray(m[f]))m[f]=[];});
     if(m.melody.length)m.melody.forEach(sl=>{if(sl&&typeof sl.note==='string'){const cp=canonPitch(sl.note,sl.octave);sl.note=cp[0];if(Number.isFinite(cp[1]))sl.octave=cp[1];}}); // imported spellings normalised to sharps
+    // v19.1 loop-drift fix: steps is the gate grid every consumer indexes by
+    // (live, SCORE, WAV, MIDI), so it is canonical. A melody longer than steps
+    // drifts one slot per pass (22 steps / 23 melody); a melody shorter than
+    // steps is a looping melody and must keep cycling, not be null-padded.
+    // Tile/truncate melody to steps length: newMelody[i]=oldMelody[i%oldLen]
+    // for i<steps.length, so the first pass sounds exactly as written and
+    // later passes repeat instead of drifting. Per-step arrays are resized
+    // to the same length (probs pad 100, durs/accents pad 1); stepLocks at
+    // or past the new length drop. Empty per-step arrays stay empty: every
+    // consumer already treats a missing entry as its default.
+    if(!Array.isArray(m.steps)||!m.steps.length){if(m.melody.length)m.steps=Array(m.melody.length).fill(1);}
+    const _n=m.steps.length;
+    if(_n){
+      if(m.melody.length&&m.melody.length!==_n){const _old=m.melody;m.melody=Array.from({length:_n},(_,i)=>_old[i%_old.length]);}
+      if(m.stepDurs.length&&m.stepDurs.length!==_n)m.stepDurs=resizeStepDurs(m.stepDurs,_n);
+      if(m.stepProbs.length&&m.stepProbs.length!==_n)m.stepProbs=m.stepProbs.length>_n?m.stepProbs.slice(0,_n):[...m.stepProbs,...Array(_n-m.stepProbs.length).fill(100)];
+      if(m.stepAccents.length&&m.stepAccents.length!==_n)m.stepAccents=resizeSteps(m.stepAccents,_n);
+      if(m.stepLocks&&typeof m.stepLocks==='object'){Object.keys(m.stepLocks).forEach(k=>{if(+k>=_n)delete m.stepLocks[k];});if(!Object.keys(m.stepLocks).length)m.stepLocks=null;}
+    }
     if(!m.harmonics.length)m.harmonics=Array(N_HARMONICS).fill(0).map((_,i)=>i===0?1:0);
     if(!m.harmonicRatios.length)m.harmonicRatios=[...DEFAULT_HARM_RATIOS];
     if(!m.harmonicPhases.length)m.harmonicPhases=Array(N_HARMONICS).fill(0);
@@ -3571,7 +3592,7 @@ function doImport(text){try{const data=JSON.parse(text);const patches=data.patch
   // Timers keyed to the old config set must die before it is replaced, playing or not.
   stopWeightedPool();stopChain();if(window.SCORE)window.SCORE.stop();
   S.configs=clean;if(!S.configs[S.currentType]){S.currentType=Object.keys(S.configs)[0];}
-  const sq=data.sequencer||{};if(Number.isFinite(sq.bpm)&&sq.bpm>0)S.bpm=Math.max(20,Math.min(300,sq.bpm));if(Number.isFinite(sq.stepCount)&&sq.stepCount>0)S.stepCount=Math.max(1,Math.min(64,Math.round(sq.stepCount)));if(Number.isFinite(sq.swing))S.swing=Math.max(0,sq.swing);if(sq.stepValueKey&&STEP_VALUES.find(s=>s.key===sq.stepValueKey))S.stepValueKey=sq.stepValueKey;
+  const sq=data.sequencer||{};if(Number.isFinite(sq.bpm)&&sq.bpm>0)S.bpm=Math.max(20,Math.min(300,sq.bpm));if(Number.isFinite(sq.stepCount)&&sq.stepCount>0)S.stepCount=Math.max(1,Math.min(512,Math.round(sq.stepCount)));if(Number.isFinite(sq.swing))S.swing=Math.max(0,sq.swing);if(sq.stepValueKey&&STEP_VALUES.find(s=>s.key===sq.stepValueKey))S.stepValueKey=sq.stepValueKey;
   if(Array.isArray(sq.meterChanges)){S.meterChanges=normalizeMeterChanges(sq.meterChanges,S.stepCount,S.stepValueKey);syncMeterBar0();}else if(sq.stepCount||sq.stepValueKey)S.meterChanges=[{bar:0,steps:S.stepCount}];
   if(data.key){S.rootNote=NOTE_NAMES.includes(canonNote(data.key.rootNote))?canonNote(data.key.rootNote):'C';S.scaleKey=(data.key.scaleKey&&Object.prototype.hasOwnProperty.call(SCALES,data.key.scaleKey))?data.key.scaleKey:'chromatic';}
   if(data.master){const m=data.master;if(Number.isFinite(m.volume))S.masterVol=Math.max(0,Math.min(1,m.volume));S.clipEnabled=m.clipEnabled!==false;if(m.reverbSize)S.reverbSize=m.reverbSize;if(m.reverbDecay)S.reverbDecay=m.reverbDecay;if(m.reverbWetMaster!==undefined)S.reverbWetMaster=m.reverbWetMaster;if(Number.isFinite(m.drumVol)){S.drumVol=Math.max(0,Math.min(1,m.drumVol));if(drumBus)drumBus.gain.value=S.drumVol;}}
@@ -3589,7 +3610,11 @@ function doImport(text){try{const data=JSON.parse(text);const patches=data.patch
 const el=(tag,attrs={},children=[])=>{const e=document.createElement(tag);for(const[k,v]of Object.entries(attrs)){if(k==='class')e.className=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else e.setAttribute(k,v);}for(const c of children){if(typeof c==='string')e.appendChild(document.createTextNode(c));else if(c)e.appendChild(c);}return e;};
 const div=(cls,children=[])=>el('div',{class:cls},children);
 const setStatus=msg=>{const s=document.getElementById('status');if(s)s.textContent=msg;};
-const updateSeqInfo=()=>{const sv=STEP_VALUES.find(s=>s.key===S.stepValueKey)||STEP_VALUES[5],inf=document.getElementById('seq-info');if(inf)inf.textContent=Math.round(S.bpm)+' bpm \u00b7 '+sv.label+' \u00b7 '+S.stepCount+' steps'+(S.swing?' \u00b7 swing '+S.swing+'ms':'')+((S.meterChanges&&S.meterChanges.length>1)?' \u00b7 meter '+meterSummary():'');};
+// v19.0 G1: main meter steps = the most common bar length over the first 64 bars
+// of the meter map (the map's tail entry extends). A pickup-first file therefore
+// reads as its main meter, not its pickup bar; a single-meter file is unchanged.
+function meterMainSteps(){const counts={};let best=S.stepCount,bestN=-1;for(let b=0;b<64;b++){const s=meterStepsAtBar(b);counts[s]=(counts[s]||0)+1;if(counts[s]>bestN){bestN=counts[s];best=s;}}return best;}
+const updateSeqInfo=()=>{const sv=STEP_VALUES.find(s=>s.key===S.stepValueKey)||STEP_VALUES[5],inf=document.getElementById('seq-info');if(inf)inf.textContent=Math.round(S.bpm)+' bpm \u00b7 '+sv.label+' \u00b7 '+meterMainSteps()+' steps'+(S.swing?' \u00b7 swing '+S.swing+'ms':'')+((S.meterChanges&&S.meterChanges.length>1)?' \u00b7 meter '+meterSummary():'');};
 
 function makeSlider(opts){
   const wrap=div('row'),lbl=el('label');lbl.textContent=opts.label;lbl.style.color=opts.color||'#0f0';
@@ -4145,10 +4170,10 @@ function makeOscCard(cfg,oscIdx,typeKey){
   const choSec=div('sec green');const choHead=div('row');const choToggle=document.createElement('button');choToggle.textContent=cfg.chorusEnabled?(cfg.chorusType==='flanger'?'FLG ON':'CHO ON'):'cho off';choToggle.style.cssText='font-size:9px;padding:1px 4px;border-color:'+(cfg.chorusEnabled?'#0fa':'#555')+';color:'+(cfg.chorusEnabled?'#0fa':'#555');choToggle.addEventListener('click',()=>{pushUndo();cfg.chorusEnabled=!cfg.chorusEnabled;rebuild();});const choTypeSel=document.createElement('select');choTypeSel.setAttribute('aria-label','Chorus type');choTypeSel.style.cssText='font-size:9px';['chorus','flanger'].forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;if(t===(cfg.chorusType||'chorus'))o.selected=true;choTypeSel.appendChild(o);});choTypeSel.addEventListener('change',e=>{pushUndo();cfg.chorusType=e.target.value;rebuild();});choHead.append(choToggle,choTypeSel);choSec.appendChild(choHead);if(cfg.chorusEnabled){choSec.appendChild(makeSlider({label:'Rate',value:cfg.chorusRate||.8,min:.01,max:10,step:.01,unit:'Hz',color:'#0fa',onInput:v=>{cfg.chorusRate=v;if(g)applyParam(g,'chorusRate',v);},onCommit:()=>pushUndo()}));choSec.appendChild(makeSlider({label:'Depth (ms)',value:cfg.chorusDepth||15,min:0,max:50,step:.5,color:'#0fa',onInput:v=>{cfg.chorusDepth=v;if(g)applyParam(g,'chorusDepth',v);},onCommit:()=>pushUndo()}));choSec.appendChild(makeSlider({label:'Feedback',value:cfg.chorusFeedback||0,min:0,max:.95,step:.01,color:'#0fa',onInput:v=>{cfg.chorusFeedback=v;if(g)applyParam(g,'chorusFeedback',v);},onCommit:()=>pushUndo()}));choSec.appendChild(makeSlider({label:'Wet',value:cfg.chorusWet||.5,min:0,max:1,step:.01,color:'#0fa',onInput:v=>{cfg.chorusWet=v;if(g)applyParam(g,'chorusWet',v);},onCommit:()=>pushUndo()}));}card.appendChild(choSec);
   const dstSec=div('sec orange');const dstHead=div('row');const dstToggle=document.createElement('button');dstToggle.textContent=cfg.distEnabled?'DST ON':'dst off';dstToggle.style.cssText='font-size:9px;padding:1px 4px;border-color:'+(cfg.distEnabled?'#f80':'#555')+';color:'+(cfg.distEnabled?'#f80':'#555');dstToggle.addEventListener('click',()=>{pushUndo();cfg.distEnabled=!cfg.distEnabled;rebuild();});const dstTypeSel=document.createElement('select');dstTypeSel.setAttribute('aria-label','Distortion type');dstTypeSel.style.cssText='font-size:9px';DIST_TYPES.forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;if(t===(cfg.distType||'soft'))o.selected=true;dstTypeSel.appendChild(o);});dstTypeSel.addEventListener('change',e=>{pushUndo();cfg.distType=e.target.value;if(g&&g._distType!==undefined)g._distType=cfg.distType;rebuild();});dstHead.append(dstToggle,dstTypeSel);dstSec.appendChild(dstHead);if(cfg.distEnabled){dstSec.appendChild(makeSlider({label:'Drive',value:cfg.distDrive||50,min:1,max:300,step:1,color:'#f80',onInput:v=>{cfg.distDrive=v;if(g)applyParam(g,'distDrive',v);},onCommit:()=>pushUndo()}));dstSec.appendChild(makeSlider({label:'Wet',value:cfg.distWet!==undefined?cfg.distWet:1,min:0,max:1,step:.01,color:'#f80',onInput:v=>{cfg.distWet=v;if(g)applyParam(g,'distWet',v);},onCommit:()=>pushUndo()}));}card.appendChild(dstSec);
   const delBody=document.createElement('div');const delLbl=document.createElement('div');delLbl.style.cssText='font-size:9px;color:#a0f;margin-bottom:3px';delLbl.textContent='DELAY '+(cfg.delayWet===0?'\u2014 off':'\u2014 wet '+Math.round(cfg.delayWet*100)+'%');delBody.appendChild(delLbl);delBody.appendChild(makeSlider({label:'Time',value:cfg.delayTime,min:0,max:10,step:.01,unit:'s',color:'#a0f',onInput:v=>{cfg.delayTime=v;if(g)applyParam(g,'delayTime',v);},onCommit:()=>pushUndo()}));delBody.appendChild(makeSlider({label:'Feedback',value:cfg.delayFeedback,min:0,max:.95,step:.01,color:'#a0f',onInput:v=>{cfg.delayFeedback=v;if(g)applyParam(g,'delayFeedback',v);},onCommit:()=>pushUndo()}));delBody.appendChild(makeSlider({label:'Wet Mix',value:cfg.delayWet,min:0,max:1,step:.01,color:'#a0f',onInput:v=>{cfg.delayWet=v;if(g)applyParam(g,'delayWet',v);},onCommit:()=>pushUndo()}));const revLbl=document.createElement('div');revLbl.style.cssText='font-size:9px;color:#a0f;margin-top:4px;margin-bottom:2px';revLbl.textContent='REVERB SEND';delBody.appendChild(revLbl);delBody.appendChild(makeSlider({label:'Send',value:cfg.reverbSend||0,min:0,max:1,step:.01,color:'#a0f',onInput:v=>{cfg.reverbSend=v;if(g)applyParam(g,'reverbSend',v);},onCommit:()=>pushUndo()}));const delSum=(cfg.delayWet>0?'DLY '+Math.round(cfg.delayWet*100)+'%':'')+(cfg.reverbSend>0?(cfg.delayWet>0?' + ':'')+'REV '+Math.round(cfg.reverbSend*100)+'%':'')||'off';const delSec=div('sec purple');delSec.appendChild(makeCollapsible('DELAY/REVERB \u2014 '+delSum,'#a0f',delBody,cfg.delayWet>0||cfg.reverbSend>0));card.appendChild(delSec);
-  const stepDiv=div('sec');const stepHeader=div('row');const oscStepLen=cfg.steps&&cfg.steps.length?cfg.steps.length:S.stepCount;const stepCountLbl=document.createElement('span');stepCountLbl.style.cssText='font-size:9px;letter-spacing:.1em';stepCountLbl.textContent=cfg.steps.filter(v=>v>0).length+'/'+oscStepLen+' steps';const lenBtns=document.createElement('span');lenBtns.style.cssText='display:flex;gap:2px;flex-wrap:wrap;margin-left:auto';STEP_OPTIONS.forEach(n=>{const b=document.createElement('button');b.textContent=n;b.style.cssText='font-size:8px;padding:1px 4px;border-color:'+(oscStepLen===n?color:color+'33')+';color:'+(oscStepLen===n?color:color+'33');if(oscStepLen===n)b.style.background=color+'1a';b.addEventListener('click',()=>{pushUndo();cfg.steps=resizeSteps(cfg.steps,n);cfg.stepDurs=resizeStepDurs(cfg.stepDurs||[],n);cfg.stepAccents=resizeSteps(cfg.stepAccents||[],n);if(cfg.stepLocks){Object.keys(cfg.stepLocks).forEach(k=>{if(+k>=n)delete cfg.stepLocks[k];});if(!Object.keys(cfg.stepLocks).length)cfg.stepLocks=null;}renderCard(typeKey,oscIdx);});lenBtns.appendChild(b);});stepHeader.append(stepCountLbl,lenBtns);stepDiv.appendChild(stepHeader);const steps=resizeSteps(cfg.steps,oscStepLen);stepDiv.appendChild(makeStepGrid(steps,'osc-'+typeKey+'-'+oscIdx,oscStepLen,color,newSteps=>{pushUndo();cfg.steps=newSteps;renderCard(typeKey,oscIdx);}));stepDiv.appendChild(makeStepDurRow(cfg,oscStepLen,color,()=>renderCard(typeKey,oscIdx)));stepDiv.appendChild(makeStepProbRow(cfg,oscStepLen,color,()=>renderCard(typeKey,oscIdx)));
-  stepDiv.appendChild(makeStepAccentRow(cfg,oscStepLen,color,()=>renderCard(typeKey,oscIdx)));stepDiv.appendChild(makePatternActions(steps,oscStepLen,color,newSteps=>{cfg.steps=newSteps;renderCard(typeKey,oscIdx);}));card.appendChild(stepDiv);
-  if(!isDrum)card.appendChild(makeStepLockEditor(cfg,oscStepLen,color,()=>renderCard(typeKey,oscIdx)));
-  const melDiv=div('sec');melDiv.appendChild(makeMelodyGrid(cfg,'osc-'+typeKey+'-'+oscIdx,()=>renderCard(typeKey,oscIdx)));card.appendChild(melDiv);
+  const stepDiv=div('sec');const stepHeader=div('row');const oscStepLen=cfg.steps&&cfg.steps.length?cfg.steps.length:S.stepCount;const stepCountLbl=document.createElement('span');stepCountLbl.style.cssText='font-size:9px;letter-spacing:.1em';stepCountLbl.textContent=cfg.steps.filter(v=>v>0).length+'/'+oscStepLen+' steps';const lenBtns=document.createElement('span');lenBtns.style.cssText='display:flex;gap:2px;flex-wrap:wrap;margin-left:auto';STEP_OPTIONS.forEach(n=>{const b=document.createElement('button');b.textContent=n;b.style.cssText='font-size:8px;padding:1px 4px;border-color:'+(oscStepLen===n?color:color+'33')+';color:'+(oscStepLen===n?color:color+'33');if(oscStepLen===n)b.style.background=color+'1a';b.addEventListener('click',()=>{pushUndo();cfg.steps=resizeSteps(cfg.steps,n);if(cfg.melody&&cfg.melody.length){const _om=cfg.melody;cfg.melody=Array.from({length:n},(_,i)=>_om[i%_om.length]);}cfg.stepDurs=resizeStepDurs(cfg.stepDurs||[],n);cfg.stepAccents=resizeSteps(cfg.stepAccents||[],n);if(cfg.stepLocks){Object.keys(cfg.stepLocks).forEach(k=>{if(+k>=n)delete cfg.stepLocks[k];});if(!Object.keys(cfg.stepLocks).length)cfg.stepLocks=null;}renderCard(typeKey,oscIdx);});lenBtns.appendChild(b);});stepHeader.append(stepCountLbl,lenBtns);stepDiv.appendChild(stepHeader);const _longPat=oscStepLen>2048;const steps=resizeSteps(cfg.steps,oscStepLen);if(_longPat){const _sum=document.createElement('div');_sum.style.cssText='font-size:9px;color:'+color+'99;margin-top:2px';_sum.textContent='Long pattern ('+oscStepLen+' steps, '+cfg.steps.filter(v=>v>0).length+' gates) \u2014 per-step editor hidden in v19 for render performance; playback, score and MIDI are unaffected. Edit by importing a new JSON.';stepDiv.appendChild(_sum);}else{stepDiv.appendChild(makeStepGrid(steps,'osc-'+typeKey+'-'+oscIdx,oscStepLen,color,newSteps=>{pushUndo();cfg.steps=newSteps;renderCard(typeKey,oscIdx);}));stepDiv.appendChild(makeStepDurRow(cfg,oscStepLen,color,()=>renderCard(typeKey,oscIdx)));stepDiv.appendChild(makeStepProbRow(cfg,oscStepLen,color,()=>renderCard(typeKey,oscIdx)));}
+  if(!_longPat){stepDiv.appendChild(makeStepAccentRow(cfg,oscStepLen,color,()=>renderCard(typeKey,oscIdx)));stepDiv.appendChild(makePatternActions(steps,oscStepLen,color,newSteps=>{cfg.steps=newSteps;renderCard(typeKey,oscIdx);}));}card.appendChild(stepDiv);
+  if(!isDrum&&!_longPat)card.appendChild(makeStepLockEditor(cfg,oscStepLen,color,()=>renderCard(typeKey,oscIdx)));
+  const melDiv=div('sec');if(_longPat){const _ms=document.createElement('div');_ms.style.cssText='font-size:9px;color:#0f0c';_ms.textContent='MELODY \u2014 '+(cfg.melody?cfg.melody.filter(s=>s).length:0)+'/'+(cfg.melody?cfg.melody.length:0)+' (long pattern; melody editor hidden as above)';melDiv.appendChild(_ms);}else{melDiv.appendChild(makeMelodyGrid(cfg,'osc-'+typeKey+'-'+oscIdx,()=>renderCard(typeKey,oscIdx)));}card.appendChild(melDiv);
 
   // ── ARPEGGIATOR SECTION ──────────────────────────────────
   if(!isDrum&&!isNoise){
@@ -4712,7 +4737,7 @@ function updateDynamicUI(){
 
 function buildApp(){
   const app=document.getElementById('app');
-  app.innerHTML='<h1>CALORIS <span style="font-size:11px;opacity:.5">v18</span></h1><div class="subtitle">multi-oscillator synth + drum machine + weighted pool \u00b7 Web Audio API</div><div class="credit">designed &amp; \u00b7 vanilla JS \u00b7 no framework \u00b7 works offline \u00b7 works with Claude </div>';
+  app.innerHTML='<h1>CALORIS <span style="font-size:11px;opacity:.5">v19</span></h1><div class="subtitle">multi-oscillator synth + drum machine + weighted pool \u00b7 Web Audio API</div><div class="credit">designed &amp; \u00b7 vanilla JS \u00b7 no framework \u00b7 works offline \u00b7 works with Claude </div>';
   const statusEl=document.createElement('div');statusEl.id='status';statusEl.className='status';statusEl.textContent='Ready. Press Play to initialise audio.';app.appendChild(statusEl);
 
   // Scope
@@ -4924,7 +4949,7 @@ app.appendChild(seqPanel);
   app.appendChild(ioPanel);
 
   const foot=document.createElement('div');foot.className='footer';
-  foot.innerHTML='CALORIS v18.0 \u00b7 meter changes + score MIDI export \u00b7 made for use with AI \u00b7 2026';
+  foot.innerHTML='CALORIS v19.0 \u00b7 fine grid + sequencer readout fix \u00b7 made for use with AI \u00b7 2026';
   app.appendChild(foot);
   render();
 }
@@ -7080,6 +7105,21 @@ var following=true,dragging=false,endStopping=false;
 function sanitize(){
   var eb=Math.floor(+S.score.endBar);S.score.endBar=eb>0?eb:null;
   S.score.tracks=(S.score.tracks||[]).filter(function(t){return t&&oscCfg(t.timbre);}).slice(0,MAXTRACKS);
+  // v19.1 duplicate-colour fix: imported tracks that share a colour (e.g. all
+  // LH tracks #004080, all RH-v1 tracks #8b0000) render indistinguishably in
+  // lanes and VIS. First track of each colour keeps it; later duplicates and
+  // colourless tracks get a fresh colour from _uniqueColor, in track order.
+  // _uniqueColor is a function declaration in this same IIFE, so it is
+  // hoisted and callable here; it reads the live track list, so colours
+  // assigned to earlier duplicates are already taken when later ones run.
+  // Already-unique colours are never changed, and stored file colours are
+  // untouched — this fixes the colour on import, for any imported file.
+  var _seenColors={};
+  S.score.tracks.forEach(function(t){
+    var _c=t.color?String(t.color).toLowerCase():'';
+    if(!_c||_seenColors[_c]){t.color=_uniqueColor(t.color||undefined);}
+    _seenColors[String(t.color).toLowerCase()]=1;
+  });
   S.score.tracks.forEach(function(t){
     t.muted=!!t.muted;
     t.solo=!!t.solo;
