@@ -37,7 +37,7 @@
      loops complete their own cycles; UI playheads follow each voice's live phase (osc._phase). -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CALORIS v19.0 – Fine Grid + Sequencer Readout Fix</title>
+<title>CALORIS v19.1 – Fine Grid + Render Envelope Guard</title>
 <style>
 :focus-visible{outline:2px solid #0ff !important;outline-offset:2px;border-radius:2px}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2145,8 +2145,8 @@ for(let bar=0;bar<bars;bar++){
           const decT=subT+Math.max(.002,oscCfg.attack||.005)+Math.max(.002,oscCfg.decay||.1);
           mainGain.gain.linearRampToValueAtTime(subVol*(oscCfg.sustain??.8),decT);
           const gateT=Math.max(subT+.01,subT+subGateSec-.05);
-          mainGain.gain.setValueAtTime(subVol*(oscCfg.sustain??.8),gateT);
-          mainGain.gain.linearRampToValueAtTime(0,gateT+Math.max(.002,oscCfg.release||.15));
+          if(gateT>=decT)mainGain.gain.setValueAtTime(subVol*(oscCfg.sustain??.8),gateT);
+          mainGain.gain.linearRampToValueAtTime(0,Math.max(gateT+Math.max(.002,oscCfg.release||.15),decT));
           lastSubHz=finalHz;
           subSounded=true;
         }
@@ -2193,8 +2193,8 @@ for(let bar=0;bar<bars;bar++){
       const sdm=(oscCfg.stepDurs&&oscCfg.stepDurs.length>oscStep)?(oscCfg.stepDurs[oscStep]||1):1;
       const gateLen=arpGateSec!=null?arpGateSec:beatSec*sdm*(oscCfg.gateTime||1);
       const gateT=Math.max(t+.01,t+gateLen-.05);
-      mainGain.gain.setValueAtTime(vol*(oscCfg.sustain??.8),gateT);
-      mainGain.gain.linearRampToValueAtTime(0,gateT+Math.max(.002,oscCfg.release||.15));
+      if(gateT>=decT)mainGain.gain.setValueAtTime(vol*(oscCfg.sustain??.8),gateT);
+      mainGain.gain.linearRampToValueAtTime(0,Math.max(gateT+Math.max(.002,oscCfg.release||.15),decT));
     } else if(effVel===0&&prevV>0){
       mainGain.gain.linearRampToValueAtTime(0,t+Math.max(.002,oscCfg.release||.15));
     } else if(effVel>0&&prevV>0){
@@ -4737,7 +4737,7 @@ function updateDynamicUI(){
 
 function buildApp(){
   const app=document.getElementById('app');
-  app.innerHTML='<h1>CALORIS <span style="font-size:11px;opacity:.5">v19</span></h1><div class="subtitle">multi-oscillator synth + drum machine + weighted pool \u00b7 Web Audio API</div><div class="credit">designed &amp; \u00b7 vanilla JS \u00b7 no framework \u00b7 works offline \u00b7 works with Claude </div>';
+  app.innerHTML='<h1>CALORIS <span style="font-size:11px;opacity:.5">v19.1</span></h1><div class="subtitle">multi-oscillator synth + drum machine + weighted pool \u00b7 Web Audio API</div><div class="credit">designed &amp; \u00b7 vanilla JS \u00b7 no framework \u00b7 works offline \u00b7 works with Claude </div>';
   const statusEl=document.createElement('div');statusEl.id='status';statusEl.className='status';statusEl.textContent='Ready. Press Play to initialise audio.';app.appendChild(statusEl);
 
   // Scope
@@ -4949,7 +4949,7 @@ app.appendChild(seqPanel);
   app.appendChild(ioPanel);
 
   const foot=document.createElement('div');foot.className='footer';
-  foot.innerHTML='CALORIS v19.0 \u00b7 fine grid + sequencer readout fix \u00b7 made for use with AI \u00b7 2026';
+  foot.innerHTML='CALORIS v19.1 \u00b7 fine grid + render envelope guard \u00b7 made for use with AI \u00b7 2026';
   app.appendChild(foot);
   render();
 }

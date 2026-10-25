@@ -909,6 +909,10 @@ Read it again as intent, not fields:
 
 Every choice above serves the arc. That is the whole job.
 
+## Render envelope guard (v19.1)
+
+In `renderToWAV`, the sustain-level event is now scheduled only when its gate time falls at or after the end of the attack+decay ramps; otherwise it is skipped and the release ramp is scheduled at the later of its old time and the ramp end, so no automation event is ever inserted inside the attack/decay ramps. Effect: 32nd/64th notes in renders no longer have their attack suppressed (about 9 ms flat gain at short-note onsets in v19.0 renders); long notes are unchanged. Live playback was already unaffected (it uses `adsr-off` ramps, not this scheduling path).
+
 ### Composer checklist
 
 Before you call a piece done:
