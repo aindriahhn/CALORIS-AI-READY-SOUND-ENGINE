@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://katabatic-vector.example/caloris-patch-schema-v19.2.json",
-  "title": "CALORIS patch (v19.2)",
-  "description": "Composition patch for CALORIS v19.2 (single-file Web Audio sequencer). Import via Paste/File in the JSON panel. This schema describes the contract as the v19 importer (doImport in CALORIS_v19_2_juno.html) actually accepts it. It is a composer contract, not an import-error predictor: most out-of-range values are clamped, coerced, or silently dropped by the importer rather than failing the import \u2014 the descriptions say which. The only loud import failures are: invalid JSON, missing patches, patches lacking the currently selected key, and a file in which every patch is dropped by normalisation ('No valid patches in file'). Unknown fields at any level are silently ignored by the importer, so additionalProperties is true throughout; a file the importer accepts must not be rejected here merely for carrying an extra field.",
+  "$id": "https://katabatic-vector.example/caloris-patch-schema-v19.3.json",
+  "title": "CALORIS patch (v19.3)",
+  "description": "Composition patch for CALORIS v19.3 (single-file Web Audio sequencer). Import via Paste/File in the JSON panel. This schema describes the contract as the v19 importer (doImport in CALORIS_v19_3_juno.html) actually accepts it. It is a composer contract, not an import-error predictor: most out-of-range values are clamped, coerced, or silently dropped by the importer rather than failing the import \u2014 the descriptions say which. The only loud import failures are: invalid JSON, missing patches, patches lacking the currently selected key, and a file in which every patch is dropped by normalisation ('No valid patches in file'). Unknown fields at any level are silently ignored by the importer, so additionalProperties is true throughout; a file the importer accepts must not be rejected here merely for carrying an extra field.",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -1109,6 +1109,11 @@
           "description": "Portamento time in seconds. Default 0 (off).",
           "type": "number",
           "minimum": 0
+        },
+        "glideMode": {
+          "description": "Glide behaviour per oscillator (v19.3): 'capped' (default when missing or any other value) caps the glide ramp so it completes within 0.8x the step; 'full' is full glissando, a continuous slide across steps that the next step does not cancel. Score tracks inherit it from their timbre oscillator.",
+          "type": "string",
+          "enum": ["capped", "full"]
         },
         "harmonics": {
           "description": "Custom-wave harmonic amplitudes (16 values); used when wave is 'custom'. Defaults to a single fundamental [1, 0, ..., 0] when empty.",

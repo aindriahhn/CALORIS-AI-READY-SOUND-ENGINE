@@ -1091,3 +1091,148 @@ bend, chord) imports as 3 score tracks from 2 MIDI tracks, 6 notes,
 tempo map 120 @ bar 0 and 60 @ bar 2, meter 4/4 @ bar 0 and 3/4 @
 bar 2, with the bent A4 arriving as A#4 at -50 cents and the chord
 split across two voices.
+
+## Glide fix and full glissando (v19.3)
+
+Two changes, both optional: a file that sets no glide plays exactly as
+in v19.2 (proven: Greensleeves, Jerusalem, Skye Boat Song, and
+Londonderry Air re-render in v19.3 with identical gate counts and
+identical render lengths to v19.2, because glide is 0 on every voice
+in those scores; their "jagged" sound is instant pitch jumps plus
+separated attacks on a sparse exposed lead, not engine glide, and
+this fix does not change their sound).
+
+### The defect (offline render only, v19.2 and earlier)
+
+In `renderToWAV`, the single-note glide ramp was not capped against
+step duration. When glide (for example 0.4 s) exceeded the step
+interval (for example 0.25 s), the next step's
+`cancelScheduledValues` removed the in-flight ramp, and Chromium's
+OfflineAudioContext renders that as flat holds with instant jumps,
+lagging one step behind the melody, with the final note never
+arriving in the bar. Short glides (shorter than the step) always
+rendered smoothly. Arp sub-notes already capped glide at 0.8x the
+sub-step and always completed. Live playback never had this defect:
+in real time a cancel cannot rewrite audio already played.
+
+### The cap rule (default)
+
+Render and live both cap glide at 0.8x the step unless the voice is
+in full mode (below). The cap is tempo-map aware: the step length
+comes from the meter and tempo map at that bar and step. A capped
+slide therefore always completes before the next step can cancel it.
+The trade-off is honest: a deliberately long portamento becomes
+per-step slides that each complete, rather than one continuous
+multi-step slide. That continuous slide is the full mode, not the
+default.
+
+### Per-oscillator glide mode setting (v19.3)
+
+`glideMode` lives on each oscillator (each voice, each section of a
+score), not as a global toggle: `'capped'` (default when missing or
+any other value) or `'full'` (full glissando, opt-in). There is no
+global default and no global override: a missing `glideMode` behaves
+as capped, and new oscillators created in the UI start capped, so
+nothing changes an existing voice's mode silently. Different voices
+in the same score may be in different modes at the same time (lead
+full, bass capped). Score tracks inherit the mode from their timbre
+oscillator; clip loop oscillators do not override it. The setting
+saves with the patch/score and survives import/export per
+oscillator.
+
+UI: each oscillator card has a Glide time slider (the existing glide
+field) plus a "Glide mode" row with Capped and Full glissando
+buttons, and a readout line stating the mode in plain words ("Glide
+off", "capped: each slide finishes within 0.8x the step", or "full
+glissando: slide runs across steps"). The readout's "next step does
+not cancel it" is a simplification: in full mode a gliding step
+never cancels the in-flight slide; a genuine pitch jump or a rest
+still cancels it, flattening the one segment before the break (see
+limitations).
+
+### How full glissando works (chained ramps, offline render)
+
+Web Audio semantics that make this necessary, measured in headless
+Chrome with minimal controls: an exponential ramp interpolates from
+the previous event's time, not from when it is scheduled, so a ramp
+with no anchor at its step starts early; `cancelScheduledValues`
+removes a whole ramp whose end is at or after the cancel time, even
+the part before it, because offline all events are known before
+rendering; and a `setValueAtTime` at the next step breaks the
+previous ramp's interpolation window. So the offline render in full
+mode chains ramps with no intervening sets and no cancels while a
+slide is in flight: the first gliding step anchors with a set at the
+held pitch plus a ramp to its target, and each following gliding
+step schedules only a ramp to its own target. A step that is not
+gliding but lands exactly on the in-flight slide's target schedules
+nothing, letting the slide finish; a step that jumps to a different
+pitch, or a rest, cancels and resets, flattening the one segment
+before the break. Live playback uses the real-time equivalent:
+cancel, set to the pitch the slide has actually reached at that
+moment (interpolated exponentially from stored ramp state), then
+ramp to the target; that is exact in real time.
+
+Verified in render (120 bpm, step 0.25 s, glide 0.4 s, C4 D4 E4 F4
+G4 A4): capped mode completes each slide and holds the target
+(centres per step 261.1, 281.3, 315.6, 342.5, 375.5, 421.9, targets
+261.6, 293.7, 329.6, 349.2, 392.0, 440.0); full mode is one
+continuous rise with no flat holds, no jumps, and no one-step lag
+(261.1 flat to 0.25 s, then 266.5, 274.5, 282.6, 290.7, 301.5, 314.9,
+331.1, 339.1, 347.2, 368.8, 393.0, 409.1 at 0.30..1.49 s, final ramp
+ending at 1.65 s past the 1.50 s bar end, as a 0.4 s slide from 1.25 s
+should). A two-voice test with the same slide shows both modes
+simultaneously: the capped voice reaches near its targets per step,
+the full voice lags smoothly mid-slide. The v19.2 rendering of the
+same test shows the defect: flat holds at the previous pitch and the
+final note never arriving in the bar.
+
+### MIDI export in full mode
+
+Capped mode bends exactly as before, ending at the next note tick.
+Full mode bends chain across notes: each bend runs its full glide
+duration past the next note tick, starting from wherever the
+previous slide had reached at that note's tick (interpolated
+linearly in semitones). Honest limits: MIDI pitch bend is a
+per-channel approximation, not the audio slide bit-for-bit. Two
+limits bite in practice. First, overlapping slides share one channel,
+so a player hears the last bend event at each tick, which is the
+current slide's bend; that is correct when the bend range covers
+the slide. Second, the default bend range is plus/minus 2 semitones:
+when a continuous slide's start pitch is more than 2 semitones from
+its target (for example a C to D to E slide reaching E from 2.75
+semitones below), the opening bend values clamp at the range edge
+until the slide comes within range. With a wider bend range set
+(`S.midiBendRange = 4`), the same slide exports exactly (measured:
+last bend at the E note tick is 2560, the value for minus 2.75
+semitones at range 4). Patch MIDI bend durations still use the base
+bpm, a pre-existing limitation unchanged by v19.3.
+
+### Other glide interactions
+
+Arp sub-notes (rate above 1) stay capped at 0.8x the sub-step in
+both modes: they are within-step. Ornament sub-notes always jump
+and end any slide run. The resonator's pitch tracking is approximate
+in full mode (it cancels and linear-ramps its own delay-time
+parameter internally); the main frequency, FM, and partials follow
+the mode exactly. Live pitch trajectories were not measured from
+live audio (the headless context is suspended by autoplay policy;
+live was verified as start/stop with no errors only); live full
+mode is exact by the real-time argument above, not by measurement.
+
+### Terminal repeats (v19.3)
+
+`expandScoreBars` previously looped while the bar index was below
+the source bar count, so a repeat at the very end of a piece, where
+`toBar` equals the source bar count, never triggered. Mid-piece
+repeats worked; terminal repeats did not, in live, render, and MIDI
+equally, because they share `scoreBarMap`. The walk now runs to
+`i <= endB`, breaks at `i === endB` only when no repeat ends there,
+triggers a repeat at `toBar === endB`, and marks the final pass
+before jumping, so it stops after the final pass without walking
+past the end into silent bars. Verified with repeat-form siblings
+(originals untouched, video fields set from existing metadata):
+Skye Boat Song expands to 24 bars / 147 events (lead 99 / bass 24 /
+harmony 24) and Ode to Joy to 24 bars / 142 events (lead 94 / bass
+24 / harmony 24), identical to their unfolded forms; the v19.2
+mid-piece repeat test still expands `[0,1,2,0,1,3,4]`; no repeat
+expands past its final pass into silent bars.

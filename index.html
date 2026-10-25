@@ -37,7 +37,7 @@
      loops complete their own cycles; UI playheads follow each voice's live phase (osc._phase). -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CALORIS v19.2 – Music Theory Completion</title>
+<title>CALORIS v19.3 – Glide Fix + Full Glissando</title>
 <style>
 :focus-visible{outline:2px solid #0ff !important;outline-offset:2px;border-radius:2px}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -733,14 +733,25 @@ function expandScoreBars(score,endB){
   reps.forEach(r=>r.endings.forEach(es=>es.forEach(b=>endingBars.add(b))));
   const out=[];const pass={};
   let i=0,guard=0;
-  while(i<endB&&guard++<8192){
+  // v19.3: a repeat at the very end (toBar === endB) must still trigger.
+  // The walk therefore runs to i === endB and only stops there when no
+  // repeat ends there, or when that repeat has had its final pass. The
+  // final pass is now marked (pass = times), which also closes a latent
+  // loop for ending-less repeats, where the old code re-triggered the
+  // final pass forever at i === toBar. No bars past the final pass are
+  // ever emitted: after a final pass i moves past toBar, and the walk
+  // ends at endB without pushing silent bars.
+  while(i<=endB&&guard++<8192){
+    if(i===endB&&!reps.some(r=>r.toBar===i))break;
     if(i>=0&&reps.some(r=>r.toBar===i)){
       const r=reps.find(r=>r.toBar===i);
       const p=pass[r.fromBar]||0;
+      if(p>=r.times){i++;continue;}
       const endList=r.endings.length?r.endings[Math.min(p,r.endings.length-1)]:[];
       endList.forEach(b=>{if(b<endB)out.push(b);});
       if(p<r.times-1){pass[r.fromBar]=p+1;i=r.fromBar;}
       else{
+        pass[r.fromBar]=r.times;
         const span=r.endings.reduce((a,es)=>a+es.length,0);
         i=r.toBar+span;
       }
@@ -2272,6 +2283,7 @@ async function renderToWAV(bars,onProgress,renderCtx){
   // Schedule sequencer events
 let prevV=0;
 let lastHz=oscCfg.freq,lastSounded=false; // glide tracking
+let lastRampEndR=null,lastRampTargetR=null; // v19.3 full glissando: end time + target of the currently scheduled slide ramp, if any
 const glideSecR=isNoise?0:(oscCfg.glide||0);
 for(let bar=0;bar<bars;bar++){
   for(let step=0;step<barSteps[bar];step++){
@@ -2349,7 +2361,7 @@ for(let bar=0;bar<bars;bar++){
           lastSubHz=finalHz;
           subSounded=true;
         }
-        lastHz=lastSubHz;lastSounded=true;
+        lastHz=lastSubHz;lastSounded=true;lastRampEndR=null; // v19.3: arp sub-notes jump, they do not carry a full-mode ramp
         prevV=subVel;
         continue;
       }
@@ -2399,22 +2411,74 @@ for(let bar=0;bar<bars;bar++){
           mainGain.gain.linearRampToValueAtTime(0,Math.max(gateT2+Math.max(.002,oscCfg.release||.15),decT2));
           lastHz=subHz;
         });
-        lastSounded=true;ornHandled=true;
+        lastSounded=true;lastRampEndR=null; // v19.3: ornament sub-notes jump, ending any slide run
+        ornHandled=true;
       }
     }
     if(!ornHandled&&effVel>0&&noteHz!=null){
       let finalHz=noteHz;
       if(locks&&locks.pitch&&!isNoise)finalHz*=Math.pow(2,locks.pitch/12);
-      const doGlide=glideSecR>0.001&&lastSounded&&Math.abs(lastHz-finalHz)>0.05;
-      const setF=(param,tgt,from)=>{
-        if(doGlide){param.cancelScheduledValues(t);param.setValueAtTime(Math.max(1,from),t);param.exponentialRampToValueAtTime(Math.max(1,tgt),t+glideSecR);}
+      // v19.3: glide mode is per oscillator. Capped (default) completes the
+      // ramp within 0.8x the step, so the next step's cancel can never
+      // remove it: cancelScheduledValues(T) removes a whole ramp whose end
+      // is >= T, even the part before T, because offline all events are
+      // known before rendering (proven with minimal controls: chained
+      // long ramps render as flat holds at each set value, only the last
+      // ramp surviving). Capped ramps end before the next step, so they
+      // survive; long uncapped ramps do not, which was the v19.2 defect.
+      // Full glissando works differently, because a ramp only
+      // interpolates between its preceding event and itself: a set at
+      // the next step breaks the previous ramp's window, pushing the
+      // slide's audible part a step late and jumping at each boundary.
+      // So while a slide is in flight, a gliding step schedules ONLY a
+      // new ramp (no set, no cancel): it chains from the previous
+      // ramp's end, and the pitch curve stays continuous, passing
+      // through each note's pitch as ramps hand over. Only the first
+      // slide of a run is anchored with a set at its step (an
+      // exponentialRamp without that anchor runs from the previous
+      // event's time, i.e. starts early). Jump/rest steps in full mode
+      // still cancel, which flattens the one slide segment before the
+      // break; that is the documented full-mode limitation, bounded to
+      // the segment before a discontinuity, where the ear expects a
+      // break. The live path does not share this problem: in real time
+      // a cancel cannot rewrite already-played audio, so live full
+      // mode anchors every slide with cancel + set + ramp, exactly.
+      const glideModeR=(oscCfg.glideMode==='full')?'full':'capped';
+      const stepSecR=_stepSecAt(_srcBar(bar),step,barSteps[bar]);
+      const glideSecEffR=glideModeR==='full'?glideSecR:Math.min(glideSecR,stepSecR*0.8);
+      const doGlide=glideSecEffR>0.001&&lastSounded&&Math.abs(lastHz-finalHz)>0.05;
+      const rampInFlightR=(glideModeR==='full'&&lastRampEndR!=null&&lastRampEndR>t);
+      let fullHoldR=false,fullCancelR=false;
+      if(glideModeR==='full'&&!doGlide){
+        if(!rampInFlightR)fullCancelR=false; // no slide in flight: a plain set is enough
+        else if(Math.abs(lastRampTargetR-finalHz)<=0.05)fullHoldR=true; // in-flight slide already ends at this pitch: let it finish
+        else fullCancelR=true; // a real jump over an in-flight slide: cancel (flattens the segment before the break)
+      }
+      const setF=(param,tgt,from,ratio)=>{
+        if(doGlide){
+          if(glideModeR==='full'){
+            if(rampInFlightR){param.exponentialRampToValueAtTime(Math.max(1,tgt),t+glideSecEffR);} // chain: no set, no cancel
+            else{param.setValueAtTime(Math.max(1,from),t);param.exponentialRampToValueAtTime(Math.max(1,tgt),t+glideSecEffR);} // anchor a new slide run
+          }
+          else{param.cancelScheduledValues(t);param.setValueAtTime(Math.max(1,from),t);param.exponentialRampToValueAtTime(Math.max(1,tgt),t+glideSecEffR);}
+        }
+        else if(glideModeR==='full'&&fullHoldR){ /* let the in-flight slide finish at this pitch: schedule nothing */ }
+        else if(glideModeR==='full'&&!fullCancelR){param.setValueAtTime(Math.max(1,tgt),t);}
         else{param.cancelScheduledValues(t);param.setValueAtTime(Math.max(1,tgt),t);} // v17.9: mirror live applyNoteFreq
       };
-      offlineOscs.forEach(o=>setF(o.param,finalHz*o.ratio,lastHz*o.ratio));
-      if(fmNode){const r=oscCfg.fmRatio||2;setF(fmNode.frequency,finalHz*r,lastHz*r);}
-      if(resN&&resN.rc.trackPitch!==false)resN.setFreq(finalHz,t,doGlide?glideSecR:0);
+      offlineOscs.forEach(o=>setF(o.param,finalHz*o.ratio,lastHz*o.ratio,o.ratio));
+      if(fmNode){const r=oscCfg.fmRatio||2;setF(fmNode.frequency,finalHz*r,lastHz*r,r);}
+      if(resN&&resN.rc.trackPitch!==false&&!(glideModeR==='full'&&fullHoldR))resN.setFreq(finalHz,t,doGlide?glideSecEffR:0);
+      if(glideModeR==='full'){
+        if(doGlide){lastRampEndR=t+glideSecEffR;lastRampTargetR=finalHz;}
+        else if(fullHoldR){ /* slide run continues untouched */ }
+        else{lastRampEndR=null;}
+      }
       lastHz=finalHz;lastSounded=true;
-    } else if(!ornHandled&&effVel<=0)lastSounded=false; // rests break the glide chain
+    } else if(!ornHandled&&effVel<=0){
+      lastSounded=false;
+      if(oscCfg.glideMode==='full'&&!isNoise){offlineOscs.forEach(o=>o.param.cancelScheduledValues(t));if(fmNode)fmNode.frequency.cancelScheduledValues(t);lastRampEndR=null;}
+    } // rests break the glide chain
 
     if(ornHandled){ /* ornament envelope already scheduled per sub-note */
     } else if(effVel>0&&prevV===0){
@@ -2621,8 +2685,10 @@ function exportMIDI(){
   // consecutively sounded steps: rests break the chain, like live. No clamping —
   // bend range is the owner's business (S.midiBendRange must match the synth).
   const glideSec=(!NOISE_WAVES.has(oscCfg.wave))?(oscCfg.glide||0):0; // live: (lockable && !isNoise)
+  const glideModeM=(oscCfg.glideMode==='full')?'full':'capped'; // v19.3: full bends run the whole glide time, not capped at the next note
   const bendRange=S.midiBendRange||2;
   const bendBytes=st=>{const norm=Math.max(-1,Math.min(1,st/bendRange));const v=Math.round((norm+1)/2*16383);return [v&0x7F,(v>>7)&0x7F];};
+  let prevSlideM=null;
   sounded.forEach((s,idx)=>{
     evts.push({tick:s.tick,data:[0x90|ch,s.noteNum,s.mv2]});
     evts.push({tick:s.tick+s.gateTicks,data:[0x80|ch,s.noteNum,0]});
@@ -2636,20 +2702,25 @@ function exportMIDI(){
       s.rep===prev.rep+1
     );
     if(glideSec>0.001&&prev&&adjacent&&s.noteNum!==prev.noteNum){
-      const deltaSt=s.noteNum-prev.noteNum;
+      // v19.3 full mode: the slide starts from wherever the previous slide
+      // had reached at this note's tick, not from the previous note's pitch,
+      // so bends chain continuously across notes instead of restarting.
+      let startStM=prev.noteNum;
+      if(glideModeM==='full'&&prevSlideM&&s.tick<prevSlideM.endTick)startStM=prevSlideM.fromSt+(prevSlideM.toSt-prevSlideM.fromSt)*(s.tick-prevSlideM.tick)/(prevSlideM.endTick-prevSlideM.tick);
       const glideTicks=Math.round(glideSec*tpq*S.bpm/60);
       const nextTick=idx+1<sounded.length?sounded[idx+1].tick:Infinity;
-      const endTick=Math.min(s.tick+glideTicks,nextTick);
+      const endTick=glideModeM==='full'?s.tick+glideTicks:Math.min(s.tick+glideTicks,nextTick);
       if(endTick>s.tick){
         const n=Math.max(2,Math.min(64,Math.round((endTick-s.tick)/24)));
         for(let k=0;k<=n;k++){
           const t=s.tick+Math.round((endTick-s.tick)*k/n);
-          const bst=k===n?0:-deltaSt*(1-k/n);
+          const bst=(startStM-s.noteNum)*(1-k/n);
           const [lsb,msb]=bendBytes(bst);
           evts.push({tick:t,data:[0xE0|ch,lsb,msb]});
         }
-      }
-    }
+        prevSlideM={tick:s.tick,fromSt:startStM,toSt:s.noteNum,endTick};
+      } else prevSlideM=null;
+    } else prevSlideM=null;
   });
   evts.push({tick:loopLen*tps,data:[0xFF,0x2F,0x00]});
   evts.sort((a,b)=>a.tick-b.tick);
@@ -2888,6 +2959,8 @@ function exportScoreMIDI(){
       _expStep+=stepsInBar;_expTick+=stepsInBar*tps;
     }
     const glideSec=(!NOISE_WAVES.has(base.wave))?(base.glide||0):0;
+    const glideModeS=(base.glideMode==='full')?'full':'capped'; // v19.3, as patch MIDI
+    let prevSlideS=null;
     sounded.forEach((s,idx)=>{
       const cch=(s.ch!=null)?s.ch:ch;
       if(s.bendSt){const bb=bendBytes(s.bendSt);evts.push({tick:s.tick,data:[0xE0|cch,bb[0],bb[1]]});}
@@ -2897,20 +2970,22 @@ function exportScoreMIDI(){
       const prev=idx>0?sounded[idx-1]:null;
       const adjacent=prev&&((s.rep===prev.rep&&s.subIdx===prev.subIdx+1)||s.rep===prev.rep+1);
       if(glideSec>0.001&&prev&&adjacent&&s.noteNum!==prev.noteNum&&!s.bendSt&&!prev.bendSt){
-        const deltaSt=s.noteNum-prev.noteNum;
+        let startStS=prev.noteNum;
+        if(glideModeS==='full'&&prevSlideS&&s.tick<prevSlideS.endTick)startStS=prevSlideS.fromSt+(prevSlideS.toSt-prevSlideS.fromSt)*(s.tick-prevSlideS.tick)/(prevSlideS.endTick-prevSlideS.tick);
         const glideTicks=Math.round(glideSec*tpq*S.bpm/60);
         const nextTick=idx+1<sounded.length?sounded[idx+1].tick:Infinity;
-        const endTick=Math.min(s.tick+glideTicks,nextTick);
+        const endTick=glideModeS==='full'?s.tick+glideTicks:Math.min(s.tick+glideTicks,nextTick);
         if(endTick>s.tick){
           const n=Math.max(2,Math.min(64,Math.round((endTick-s.tick)/24)));
           for(let k=0;k<=n;k++){
             const tt=s.tick+Math.round((endTick-s.tick)*k/n);
-            const bst=k===n?0:-deltaSt*(1-k/n);
+            const bst=(startStS-s.noteNum)*(1-k/n);
             const lsbMsb=bendBytes(bst);
             evts.push({tick:tt,data:[0xE0|cch,lsbMsb[0],lsbMsb[1]]});
           }
-        }
-      }
+          prevSlideS={tick:s.tick,fromSt:startStS,toSt:s.noteNum,endTick};
+        } else prevSlideS=null;
+      } else prevSlideS=null;
     });
     evts.push({tick:totalTicks,data:[0xFF,0x2F,0x00]});
     evts.sort((a,b)=>a.tick-b.tick);
@@ -3545,19 +3620,31 @@ function renderChainPanel(){
 // Exponential ramp (natural pitch curve); no glide after a rest/mute, or when
 // the pitch didn't move. v13.5: every unison voice tracks the note — each keeps
 // its own detune offset, so unison + melody/glide no longer leaves voices behind.
-function applyNoteFreq(g,targetHz,now,glideSec){
+function applyNoteFreq(g,targetHz,now,glideSec,glideMode){
   let _glided=false; // v13.6: report back whether a glide ramp was scheduled
+  const _mode=(glideMode==='full')?'full':'capped'; // v19.3
+  // v19.3 full glissando: an exponentialRamp without an anchor at `now`
+  // runs from the previous event's time, i.e. starts early. Anchor each
+  // slide at `now` with the pitch the in-flight ramp has reached, computed
+  // from the stored ramp state, then ramp over the full glide time.
+  const _curPitch=()=>{
+    const r=g._glideRamp;if(!r)return g._lastNoteHz;
+    if(now>=r.end)return r.to;
+    if(now<=r.start)return r.from;
+    return r.from*Math.pow(r.to/r.from,(now-r.start)/(r.end-r.start));
+  };
   const ramp=(param,tgt,from)=>{
     if(glideSec>0.001&&from!=null&&g._noteSounded&&Math.abs(from-tgt)>0.05){
-      param.cancelScheduledValues(now);
-      param.setValueAtTime(Math.max(1,from),now);
-      param.exponentialRampToValueAtTime(Math.max(1,tgt),now+glideSec);
+      if(_mode==='full'){const cur=_curPitch();param.cancelScheduledValues(now);param.setValueAtTime(Math.max(1,cur),now);param.exponentialRampToValueAtTime(Math.max(1,tgt),now+glideSec);}
+      else{param.cancelScheduledValues(now);param.setValueAtTime(Math.max(1,from),now);param.exponentialRampToValueAtTime(Math.max(1,tgt),now+glideSec);}
       _glided=true;
+      g._glideRamp={from:(_mode==='full'?_curPitch():from),to:tgt,start:now,end:now+glideSec};
     }else{
       // v17.9: a non-glide note must also clear any still-pending ramp from an earlier
       // (longer-than-a-step) glide, or that ramp resumes from this value toward its old target.
       param.cancelScheduledValues(now);
       param.setValueAtTime(Math.max(1,tgt),now);
+      g._glideRamp=null;
     }
   };
   const fromF=g._lastNoteHz!=null?g._lastNoteHz:null;
@@ -3805,8 +3892,13 @@ if (oscCfg.arpEnabled && effVel > 0 && !g.isNoise) {
       if (stepLocksNow && stepLocksNow.pitch && lockable && !g.isNoise) _finalHz *= Math.pow(2, stepLocksNow.pitch / 12);
       const _fromHz = g._lastNoteHz; // v13.6: previous note, for MIDI glide bend
       let _didGlide = false;
-      if (!oscCfg.muted) _didGlide = applyNoteFreq(g, _finalHz, now, glideSec);
-      if (_didGlide && midiOut && _fromHz != null) midiGlideBend(midiCh(oscCfg,i), _fromHz, _finalHz, glideSec*1000, key);
+      // v19.3: per-oscillator glide mode. Capped (default) completes within
+      // 0.8x the step, matching the render cap; full passes the whole glide
+      // time through and chains the ramp. beat is ms per step here.
+      const _glideModeLive = (oscCfg.glideMode==='full')?'full':'capped';
+      const _glideSecLive = _glideModeLive==='full'?glideSec:Math.min(glideSec, beat/1000*0.8);
+      if (!oscCfg.muted) _didGlide = applyNoteFreq(g, _finalHz, now, _glideSecLive, _glideModeLive);
+      if (_didGlide && midiOut && _fromHz != null) midiGlideBend(midiCh(oscCfg,i), _fromHz, _finalHz, _glideSecLive*1000, key);
       g._lastNoteHz = _finalHz;
       g._noteSounded = !oscCfg.muted;
       if(window.VIS&&g._noteSounded)window.VIS.note({hz:_finalHz,vel:effVel,voice:i,wave:oscCfg.wave,label:oscCfg.label||''});
@@ -4793,6 +4885,11 @@ function makeOscCard(cfg,oscIdx,typeKey){
   card.appendChild(makeSlider({label:'Pan',value:cfg.pan||0,min:-1,max:1,step:.01,color,onInput:v=>{cfg.pan=v;if(g)applyParam(g,'pan',v);},onCommit:()=>pushUndo()}));
   card.appendChild(makeSlider({label:'Gate',value:cfg.gateTime||1,min:.01,max:1,step:.01,color,onInput:v=>{cfg.gateTime=v;},onCommit:()=>pushUndo()}));
   card.appendChild(makeSlider({label:'Glide',value:cfg.glide||0,min:0,max:1,step:.01,unit:'s',color,onInput:v=>{cfg.glide=v;},onCommit:()=>pushUndo()})); // v13.4
+  // v19.3: glide mode is per oscillator, saved with the patch/score like
+  // glide time itself (it is not a runtime key, so export keeps it).
+  // Capped is the default; full glissando is opt-in per voice.
+  const glideModeRow=div('row');const glideModeLbl=document.createElement('label');glideModeLbl.textContent='Glide mode';glideModeLbl.style.color=color;const glideModeBtns=document.createElement('span');glideModeBtns.style.cssText='display:flex;gap:2px;flex-wrap:wrap;flex:1';const glideModeCur=(cfg.glideMode==='full')?'full':'capped';[['capped','Capped'],['full','Full glissando']].forEach(([v,l])=>{const b=document.createElement('button');b.textContent=l;b.setAttribute('aria-label','Glide mode '+l);const active=glideModeCur===v;b.style.cssText='font-size:9px;padding:1px 5px;border-color:'+(active?color:color+'33')+';color:'+(active?color:color+'44')+';background:'+(active?color+'1a':'transparent');b.addEventListener('click',()=>{pushUndo();cfg.glideMode=v;renderCard(typeKey,oscIdx);});glideModeBtns.appendChild(b);});glideModeRow.append(glideModeLbl,glideModeBtns);card.appendChild(glideModeRow);
+  const glideReadout=document.createElement('div');glideReadout.style.cssText='font-size:9px;color:'+color+'99;margin-bottom:3px';glideReadout.textContent=(cfg.glide||0)<=0?'Glide off — notes jump straight to pitch':('Glide '+(cfg.glide||0).toFixed(2)+'s · '+(glideModeCur==='full'?'full glissando — slide runs across steps, next step does not cancel it':'capped — each slide finishes within 0.8x the step'));card.appendChild(glideReadout);
   const rateRow=div('row');const rateLbl=document.createElement('label');rateLbl.textContent='Rate';rateLbl.style.color=color;const rateBtns=document.createElement('span');rateBtns.style.cssText='display:flex;gap:2px;flex-wrap:wrap;flex:1';const cur=cfg.rateMult||1;[{v:.25,l:'\u00bc\u00d7'},{v:.5,l:'\u00bd\u00d7'},{v:1,l:'1\u00d7'},{v:2,l:'2\u00d7'},{v:4,l:'4\u00d7'},{v:8,l:'8\u00d7'}].forEach(({v,l})=>{const b=document.createElement('button');b.textContent=l;const active=Math.abs(v-cur)<.01;b.style.cssText='font-size:9px;padding:1px 5px;border-color:'+(active?color:color+'33')+';color:'+(active?color:color+'44')+';background:'+(active?color+'1a':'transparent');b.addEventListener('click',()=>{pushUndo();cfg.rateMult=v;renderCard(typeKey,oscIdx);});rateBtns.appendChild(b);});rateRow.append(rateLbl,rateBtns);card.appendChild(rateRow);
   if(!isDrum){
   if(!isNoise){const uniSec=div('sec');const uniHead=div('row');const uniLbl=document.createElement('label');uniLbl.textContent='Unison';uniLbl.style.color=color;const uniBtns=document.createElement('span');uniBtns.style.cssText='display:flex;gap:2px;flex-wrap:wrap;flex:1';[1,2,3,4,5,6,7,8].forEach(n=>{const b=document.createElement('button');b.textContent=n;const active=(cfg.unisonCount||1)===n;b.style.cssText='font-size:9px;padding:1px 5px;border-color:'+(active?color:color+'33')+';color:'+(active?color:color+'44')+';background:'+(active?color+'1a':'transparent');b.addEventListener('click',()=>{pushUndo();cfg.unisonCount=n;rebuild();});uniBtns.appendChild(b);});uniHead.append(uniLbl,uniBtns);uniSec.appendChild(uniHead);if((cfg.unisonCount||1)>1)uniSec.appendChild(makeSlider({label:'Detune (ct)',value:cfg.unisonDetune||20,min:0,max:100,step:1,color,onInput:v=>{cfg.unisonDetune=v;if(g)applyParam(g,'unisonDetune',v);},onCommit:()=>pushUndo()}));card.appendChild(uniSec);}
@@ -5398,7 +5495,7 @@ function updateDynamicUI(){
 
 function buildApp(){
   const app=document.getElementById('app');
-  app.innerHTML='<h1>CALORIS <span style="font-size:11px;opacity:.5">v19.2</span></h1><div class="subtitle">multi-oscillator synth + drum machine + weighted pool \u00b7 Web Audio API</div><div class="credit">designed &amp; \u00b7 vanilla JS \u00b7 no framework \u00b7 works offline \u00b7 works with Claude </div>';
+  app.innerHTML='<h1>CALORIS <span style="font-size:11px;opacity:.5">v19.3</span></h1><div class="subtitle">multi-oscillator synth + drum machine + weighted pool \u00b7 Web Audio API</div><div class="credit">designed &amp; \u00b7 vanilla JS \u00b7 no framework \u00b7 works offline \u00b7 works with Claude </div>';
   const statusEl=document.createElement('div');statusEl.id='status';statusEl.className='status';statusEl.textContent='Ready. Press Play to initialise audio.';app.appendChild(statusEl);
 
   // Scope
@@ -5610,7 +5707,7 @@ app.appendChild(seqPanel);
   app.appendChild(ioPanel);
 
   const foot=document.createElement('div');foot.className='footer';
-  foot.innerHTML='CALORIS v19.2 \u00b7 music theory completion: ornaments, tempo curves, repeats, key changes, microtones \u00b7 made for use with AI \u00b7 2026';
+  foot.innerHTML='CALORIS v19.3 \u00b7 glide fix: capped glide + full glissando setting \u00b7 made for use with AI \u00b7 2026';
   app.appendChild(foot);
   render();
 }
