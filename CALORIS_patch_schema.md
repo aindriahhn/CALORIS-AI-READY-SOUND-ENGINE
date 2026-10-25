@@ -923,3 +923,171 @@ Before you call a piece done:
 - Is there a silence that means something?
 - Does the loop point compose, or just restart?
 - Could you remove one voice and lose nothing? Then remove it.
+
+## Music theory completion (v19.2)
+
+Four notation-level features that were previously flattened, plus two
+round-trip features, all optional: a file that uses none of them imports
+and plays exactly as in v19.1 (regression gates: Greensleeves 72/32/32,
+Jerusalem 133/74/74, Bach 3,697 gates, no page errors).
+
+### Ornaments
+
+A melody slot may carry `orn: {type, note?, octave?, step?, rate?}`.
+
+- `trill`: starts on the upper neighbour and alternates principal /
+  neighbour at `rate` sub-notes per second (default 12, clamped 2..32),
+  counted over the note's gate duration.
+- `mordentU` / `mordentL`: principal, neighbour, principal in equal
+  thirds of the gate.
+- `graceAcc` (acciaccatura): a grace note taking the first 25% of the
+  gate, or 0.05 s, whichever is smaller, then the principal for the
+  remainder. The grace steals time from the principal note, never from
+  the previous note.
+- `graceApp` (appoggiatura): the grace takes half the gate, the
+  principal the other half.
+- Neighbour pitch: `orn.note`/`orn.octave` when given; `orn.step` in
+  semitones when given; otherwise the diatonic neighbour in a major
+  scale (a half step above E and B, below F and C, a whole step
+  elsewhere). Ornaments render in live playback (pitch sequence on the
+  step's gate, with MIDI note-ons per sub-note), in `renderScoreToWAV`
+  (each sub-note retriggered with its own envelope), and in score MIDI
+  export (one note-on/off pair per sub-note). An existing conversion
+  that flattened an ornament is updated by adding `orn` to that slot
+  only: principal note counts are unchanged, sub-notes are added.
+  Verified: The Ash Grove's three source trills (bars 11, 13, 15)
+  become 9 + 9 + 27 sub-notes, lead 83 -> 125 notes, bass/harmony
+  24/24 unchanged, render duration unchanged at 60.0 s.
+
+### Tempo curves
+
+`sequencer.tempoMap` and `score.tempoMap` are arrays of
+`{bar, bpm}`, sorted by bar. The tempo at a bar position is linearly
+interpolated between neighbouring points and flat outside the first
+and last point. One point, or no map, is exactly the old constant bpm.
+Live playback, WAV render, and score MIDI export all honour the map;
+in MIDI the curve is written as tempo meta events at each map point
+(the first point replaces the track's tick-0 tempo), so a player that
+honours tempo metas follows the curve. Verified: a 60 -> 120 bpm map
+over bars 0..2 renders in 9.67 s (constant 60 would be 16 s, constant
+120 would be 8 s) and exports tempo metas 1,000,000 us at tick 0 and
+500,000 us at the bar-2 tick.
+
+### Repeat structure and key changes as data
+
+- `score.repeats`: `[{fromBar, toBar, times, endings}]`. The region is
+  `[fromBar, toBar)`; `times` is the total number of plays (default 2,
+  clamped 1..8); `endings` is one list of source bars per pass, in
+  order, written after `toBar` in the source. Pass i plays
+  `endings[i]` (the last list repeats if `times` exceeds its length).
+  Repeats do not nest and do not overlap; overlapping entries keep
+  the first and drop the rest. Playback, render, and MIDI export all
+  walk the expanded bar list; an unfolded file (no repeats) expands
+  to itself and plays identically.
+- `score.key` is the opening key `{root, scale}` (`scale` is
+  `"major"` or `"minor"`); `score.keyChanges` is
+  `[{bar, root, scale}]`. Key changes emit MIDI key-signature metas
+  at the change bar and re-map degree slots (below); absolute note
+  slots are untouched by them.
+- Degree slots: a melody slot may use `deg` (1..7) and `degAcc`
+  (-1, 0, 1) instead of `note`. The pitch is the scale degree in the
+  active key, with `octave` as the octave of degree 1. Verified: C
+  major deg 1/5 = C4/G4, then a key change to G major makes deg 1/5 =
+  G4/D5, with MIDI key metas (0 sharps, major) then (1 sharp, major).
+
+### Microtones and alternate tuning
+
+- A melody slot may carry `cents` (-100..100), an explicit detune
+  applied on top of the equal-tempered pitch.
+- A score (or oscillator) may carry `tuning`: `"equal"` (default),
+  `"just"`, `"pythagorean"`, or `"meantone"` (quarter-comma). Named
+  tunings offset diatonic degrees only, in cents relative to equal
+  temperament (just: 0, +3.91, -13.69, -1.96, +1.96, -15.64, -11.73;
+  Pythagorean: 0, +3.91, +7.82, -1.96, +1.96, +5.87, +11.73;
+  meantone: 0, -6.84, -13.69, +3.42, -3.42, -10.26, -17.11);
+  chromatic notes are unaffected. Live and rendered audio use the
+  exact detuned frequency. Score MIDI export writes the nearest MIDI
+  note plus a pitch-bend event (bend range 2 semitones, reset to
+  centre at note-off); this is per-channel, so it is exact for
+  monophonic tracks and shared across simultaneous notes on one
+  channel. Patch MIDI export uses the nearest note without bend.
+  Verified: A4 + 50 cents renders at 452.89 Hz and exports as note 69
+  with bend value 10239 (0.50 semitones) reset to 8192 at note-off;
+  just-intonation degree 3 in C resolves to 327.03 Hz (-13.69 cents).
+
+### In-engine video export (v19.2)
+
+`exportScoreVideo({title, composer, credits, preset})` exports the
+loaded score as one video file, entirely in the browser: a 6 s title
+card drawn by the VIS canvas itself, then the whole tune with the
+engine's own visualiser, driven by the score's real note events
+(including ornament sub-notes), over audio from `renderScoreToWAV`
+(never a MIDI synth). Title fields live on the score (`title`,
+`composer`, `credits`, `videoPreset`) and are saved with it; the
+title card's "played by CALORIS" line takes the version from the
+document title, never typed by hand. Defaults pre-fill from the
+score's existing metadata, so an existing tune exports with a
+sensible card without retyping. The preset list comes from VIS
+itself (Bloom, Rain, Tunnel, Lattice, Plasma, Orbit, Nebula, Spiral,
+Cascade, Kaleidoscope); no preset is hard-coded into the export.
+Recording is browser-native: the VIS canvas stream (30 fps
+requested) plus the rendered audio through a MediaStreamDestination,
+combined in a MediaRecorder. The container is the best the browser
+supports, MP4 first, then WebM; the returned info and the UI state
+the actual container, resolution, and fps. Recorded resolution is
+the VIS canvas size (viewport x devicePixelRatio, capped at 1.5 by
+VIS), so a 1920x1080 export needs a 1920x1080 viewport at scale 1.
+Gain is built in: the rendered audio is measured before recording
+(sample peak, 4x-interpolated true-peak approximation, RMS-based
+LUFS-I approximation without K-weighting, labelled as such) and
+normalised gain-only, never with dynamics or EQ, so no export
+leaves with peak above -1 dBFS; the applied gain is reported.
+Verified in headless Chrome: 1920x1080, MP4 container with VP9 video
+and Opus audio (Chrome's MP4 muxer, not H.264), requested 30 fps,
+measured 25.4 fps in headless, 8.11 s file for a 6 s title + 2 s tune
+(0.11 s recorder overhead), title card legible with all five lines
+including the auto-filled version, first sound at 6.034 s (one frame
+after the 6.000 s title end), peak -2.56 dBFS, true peak -2.56 dBFS,
+LUFS-I (approx) -7.85, gain 0 dB, 13 visual events. Arp sub-notes are
+not expanded into visualiser events (they still sound in the audio);
+that is the one known visualiser gap.
+
+### MIDI to score import (v19.2)
+
+`importMIDIToScore(arrayBuffer, fileName)` parses Standard MIDI Files
+(Type 0 and Type 1; Type 2 and SMPTE time division are rejected with
+an error) and builds a playable score: one patch (`midi_import`) of
+per-bar, per-voice oscillators, one score track per MIDI-track voice,
+one clip per bar. Tempo metas become the v19.2 tempo map and
+time-signature metas become the meter map, so tempo/meter changes
+survive the import. Quantisation: the fine grid is 48 steps per
+beat (192 per 4/4 bar), ticksPerStep = tpq/48; onset step =
+round((tick - barStart) / ticksPerStep), duration steps =
+max(1, round(length / ticksPerStep)). Notes whose onset is not
+exactly on a step are counted in the import report (off-grid count
+and max deviation in ticks) and rounded, never silently dropped;
+exact duplicate notes in one voice are counted as merged. Polyphony
+is partitioned greedily into voices per bar (a note joins the first
+voice whose previous note has ended); each voice becomes its own
+score track, because a score track holds one pitch per step. Pitch
+bend in force on a note's channel at its onset becomes a cents
+offset on that slot (nearest MIDI note + cents); bends that move
+mid-note are not represented. Program changes survive as the
+oscillator label and `midiProgram` field; the timbre itself is a
+neutral sine, not a sampled GM instrument. Channel 10 drum notes are
+imported as pitched notes and counted in the report (GM drum mapping
+is not implemented). Durations are gate lengths: on re-export the
+gate is 0.85 x the imported step duration, so a round trip matches
+onsets, pitches, and counts, not raw gate ticks. Verified:
+Greensleeves exported from v19.2 and re-imported gives 72/32/32
+notes, 0 off-grid, 0 merged, with pitches and onsets matching in
+played order (note: Greensleeves playback uses absolute pattern
+phase, so the comparison is against the exported note order, not
+the melody-slot order in the original file); the fine-grid bar
+lengths become 24 steps (1/8 pickup) and 144 steps (6/8 bars), and
+step positions scale by 12 from the original 16th grid. An
+independent SMF (Type 1, conductor tempo/meter changes, program,
+bend, chord) imports as 3 score tracks from 2 MIDI tracks, 6 notes,
+tempo map 120 @ bar 0 and 60 @ bar 2, meter 4/4 @ bar 0 and 3/4 @
+bar 2, with the bent A4 arriving as A#4 at -50 cents and the chord
+split across two voices.

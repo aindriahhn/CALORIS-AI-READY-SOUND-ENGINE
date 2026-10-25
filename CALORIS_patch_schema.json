@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://katabatic-vector.example/caloris-patch-schema-v19.json",
-  "title": "CALORIS patch (v19)",
-  "description": "Composition patch for CALORIS v19 (single-file Web Audio sequencer). Import via Paste/File in the JSON panel. This schema describes the contract as the v19 importer (doImport in CALORIS_v19_0_juno.html) actually accepts it. It is a composer contract, not an import-error predictor: most out-of-range values are clamped, coerced, or silently dropped by the importer rather than failing the import \u2014 the descriptions say which. The only loud import failures are: invalid JSON, missing patches, patches lacking the currently selected key, and a file in which every patch is dropped by normalisation ('No valid patches in file'). Unknown fields at any level are silently ignored by the importer, so additionalProperties is true throughout; a file the importer accepts must not be rejected here merely for carrying an extra field.",
+  "$id": "https://katabatic-vector.example/caloris-patch-schema-v19.2.json",
+  "title": "CALORIS patch (v19.2)",
+  "description": "Composition patch for CALORIS v19.2 (single-file Web Audio sequencer). Import via Paste/File in the JSON panel. This schema describes the contract as the v19 importer (doImport in CALORIS_v19_2_juno.html) actually accepts it. It is a composer contract, not an import-error predictor: most out-of-range values are clamped, coerced, or silently dropped by the importer rather than failing the import \u2014 the descriptions say which. The only loud import failures are: invalid JSON, missing patches, patches lacking the currently selected key, and a file in which every patch is dropped by normalisation ('No valid patches in file'). Unknown fields at any level are silently ignored by the importer, so additionalProperties is true throughout; a file the importer accepts must not be rejected here merely for carrying an extra field.",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -111,6 +111,21 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/meterChange"
+          }
+        },
+        "tempoMap": {
+          "description": "v19.2, optional. Array of {bar, bpm}; tempo at a bar position is linearly interpolated between points, flat outside the first/last point. One point or absent = constant bpm.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "bar": {
+                "type": "number"
+              },
+              "bpm": {
+                "type": "number"
+              }
+            }
           }
         }
       }
@@ -332,6 +347,61 @@
           "items": {
             "$ref": "#/$defs/scoreTrack"
           }
+        },
+        "tempoMap": {
+          "description": "v19.2, optional. Array of {bar, bpm}; tempo at a bar position is linearly interpolated between points, flat outside the first/last point. One point or absent = constant bpm.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "bar": {
+                "type": "number"
+              },
+              "bpm": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "repeats": {
+          "description": "v19.2, optional. Array of {fromBar, toBar, times, endings}: region [fromBar, toBar), total plays, one list of source bars per pass.",
+          "type": "array"
+        },
+        "keyChanges": {
+          "description": "v19.2, optional. Array of {bar, root, scale}: mid-piece key changes; scale is major or minor.",
+          "type": "array"
+        },
+        "key": {
+          "description": "v19.2, optional. Opening key {root, scale} for degree slots and MIDI key signatures.",
+          "type": "object",
+          "properties": {
+            "root": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "string"
+            }
+          }
+        },
+        "tuning": {
+          "description": "v19.2, optional. Named tuning: equal (default), just, pythagorean, meantone. Offsets diatonic degrees only.",
+          "type": "string"
+        },
+        "title": {
+          "description": "v19.2, optional. Title for the video export title card; saved with the score.",
+          "type": "string"
+        },
+        "composer": {
+          "description": "v19.2, optional. Composer/source line for the video export title card.",
+          "type": "string"
+        },
+        "credits": {
+          "description": "v19.2, optional. Credits block for the video export title card.",
+          "type": "string"
+        },
+        "videoPreset": {
+          "description": "v19.2, optional. Visualiser preset id for video export (see VIS presets).",
+          "type": "string"
         }
       }
     },
@@ -505,11 +575,10 @@
       }
     },
     "melodySlot": {
-      "description": "One melody slot, read cyclically at step % melody.length. A null slot is a rest in the melody array (the array may contain nulls).",
+      "description": "One melody slot, read cyclically at step % melody.length. A null slot is a rest in the melody array (the array may contain nulls). A slot carries either note (absolute pitch) or deg (scale degree in the active key, v19.2); octave is always required.",
       "type": "object",
       "additionalProperties": true,
       "required": [
-        "note",
         "octave"
       ],
       "properties": {
@@ -555,8 +624,53 @@
           "type": "number",
           "minimum": 0,
           "maximum": 100
+        },
+        "deg": {
+          "description": "v19.2, optional, 1..7. Scale degree in the active key; use instead of note. degAcc -1/0/1 in semitones.",
+          "type": "number"
+        },
+        "degAcc": {
+          "description": "v19.2, optional. Accidental on a degree slot, in semitones (-1, 0, 1).",
+          "type": "number"
+        },
+        "cents": {
+          "description": "v19.2, optional, -100..100. Explicit detune in cents on top of the equal-tempered pitch.",
+          "type": "number"
+        },
+        "orn": {
+          "description": "v19.2, optional. Ornament: {type: trill|mordentU|mordentL|graceAcc|graceApp, note?, octave?, step?, rate?}. See schema.md section Music theory completion (v19.2).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "note": {
+              "type": "string"
+            },
+            "octave": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            },
+            "rate": {
+              "type": "number"
+            }
+          }
         }
-      }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "note"
+          ]
+        },
+        {
+          "required": [
+            "deg"
+          ]
+        }
+      ]
     },
     "kitStep": {
       "description": "One step of a kit voice's stepData. stepData is auto-created when missing or the wrong length \u2014 omit it entirely in authored files.",
@@ -1132,6 +1246,14 @@
             "object",
             "null"
           ]
+        },
+        "tuning": {
+          "description": "v19.2, optional. Named tuning for this voice, as score tuning.",
+          "type": "string"
+        },
+        "midiProgram": {
+          "description": "v19.2, optional. GM program number preserved by MIDI import; label only, not a sampled instrument.",
+          "type": "number"
         }
       }
     }
