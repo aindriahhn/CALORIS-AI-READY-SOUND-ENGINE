@@ -1240,7 +1240,7 @@ window.CALORIS_GAIN={
   set(o){if(o&&typeof o==='object'){delete o.muted;Object.assign(GAIN,o);_saveGain();applyGain();}},
   setMaster(v){S.masterVol=Math.max(0,Math.min(1,+v||0));if(actx&&masterGain&&!S.midiOnlyMode)masterGain.gain.setTargetAtTime(S.masterVol,actx.currentTime,.05);},
   setMuted(m){GAIN.muted=!!m;applyGain();},
-  play(){getCtx();if(!S.isPlaying){startPatch(S.currentType);S.isPlaying=true;try{updateDynamicUI();render();}catch(e){}}applyGain();},
+  play(){getCtx();if(!S.isPlaying){var _nt=actx.currentTime;masterGain.gain.cancelScheduledValues(_nt);masterGain.gain.setValueAtTime(0,_nt);masterGain.gain.linearRampToValueAtTime(S.midiOnlyMode?0:S.masterVol,_nt+1);startPatch(S.currentType);S.isPlaying=true;try{updateDynamicUI();render();}catch(e){}}applyGain();},
   stop(){try{stopAllAudio();}catch(e){}S.isPlaying=false;try{updateDynamicUI();render();}catch(e){}},
   isPlaying:()=>!!S.isPlaying,
   patchKeys:()=>Object.keys(S.configs),
@@ -2103,7 +2103,20 @@ async function renderToWAV(bars,onProgress,renderCtx){
   const octx=new(window.OfflineAudioContext||window.webkitOfflineAudioContext)(2,frames,sr);
   const oMaster=octx.createGain();oMaster.gain.value=RS.masterVol;
   const oClip=octx.createWaveShaper();oClip.curve=softClipCurve();oClip.oversample='4x';
-  oMaster.connect(oClip);oClip.connect(octx.destination);
+  const _staged=!!(renderCtx&&renderCtx.staged);
+  if(_staged){
+    const _trimKey=(renderCtx&&renderCtx.trimKey)||((renderCtx&&renderCtx.scoreHook)?'__score':S.currentType);
+    const oTrim=octx.createGain();oTrim.gain.value=_db2lin((typeof GAIN!=='undefined'&&GAIN.patchTrimDb&&GAIN.patchTrimDb[_trimKey])||0);
+    const oDrive=octx.createGain();oDrive.gain.value=_db2lin((typeof GAIN!=='undefined'?GAIN.driveDb:0)||0);
+    const oCeil=octx.createGain();oCeil.gain.value=_db2lin((typeof GAIN!=='undefined'?GAIN.ceilingDb:0)||0);
+    const oLim=octx.createDynamicsCompressor();oLim.knee.value=0;oLim.attack.value=.003;oLim.release.value=.12;oLim.threshold.value=(typeof GAIN!=='undefined'&&GAIN.limOn)?GAIN.limThresh:0;oLim.ratio.value=(typeof GAIN!=='undefined'&&GAIN.limOn)?20:1;
+    oMaster.connect(oTrim);oTrim.connect(oDrive);
+    if(S.clipEnabled){oDrive.connect(oClip);oClip.connect(oCeil);}else{oDrive.connect(oCeil);}
+    oCeil.connect(oLim);oLim.connect(octx.destination);
+    // Export gain staging, matching live: master -> trim -> drive -> soft-clip (if enabled) -> ceiling -> limiter -> out. Monitor mute and MIDI-only silence are deliberately NOT applied: a muted live session must not export silence. Live SCORE.play() does not use this path.
+  }else{
+    oMaster.connect(oClip);oClip.connect(octx.destination);
+  }
 
   // Offline reverb
   const revDur=RS.reverbSize||2.5,revDec=RS.reverbDecay||3.5,rLen=Math.floor(sr*revDur);
@@ -2512,7 +2525,7 @@ for(let bar=0;bar<bars;bar++){
 // per track) without touching live state, then renders through renderToWAV
 // with a per-step hook that mirrors SCORE.onStep: clip-boundary pattern swaps
 // plus fade-in/out and mute volume scaling. Drop-out bars render as silence.
-async function renderScoreToWAV(onProgress){
+async function renderScoreToWAV(onProgress,opts){
   if(window.SCORE&&typeof SCORE.sanitize==='function')SCORE.sanitize();
   const tracks=(S.score&&S.score.tracks)||[];
   if(!tracks.length)throw new Error('Score is empty — add a track first');
@@ -2577,6 +2590,7 @@ async function renderScoreToWAV(onProgress){
   const bars=barMap.length;
   const rendered=await renderToWAV(bars,onProgress,{
     patch:{type:'synth',name:'Score',color:'#0ff',oscillators:voscs},
+    staged:!!(opts&&opts.staged),trimKey:'__score',
     scoreHook:scoreHook,
     mix:{drumVol:S.drumVol},
     stepValueKey:S.stepValueKey,swing:S.swing,bpm:S.bpm,stepCount:S.stepCount,meterChanges:S.meterChanges,
@@ -3089,18 +3103,19 @@ function measureVideoGain(buf){
   let tp=peak;
   for(let ch=0;ch<buf.numberOfChannels;ch++){
     const d=buf.getChannelData(ch);
-    for(let i=0;i<d.length-1;i++)for(let k=1;k<4;k++){const v=Math.abs(d[i]+(d[i+1]-d[i])*k/4);if(v>tp)tp=v;}
-  }
+    for(let i=0;i<d.length-1;i++){const p0=d[i-1]||0,p1=d[i],p2=d[i+1],p3=(i+2<d.length)?d[i+2]:d[i+1];
+      for(let k=1;k<4;k++){const u=k/4,v=0.5*((2*p1)+(-p0+p2)*u+(2*p0-5*p1+4*p2-p3)*u*u+(-p0+3*p1-3*p2+p3)*u*u*u);if(Math.abs(v)>tp)tp=Math.abs(v);}}
+  } // Catmull-Rom 4x: unlike linear interpolation (which can never exceed sample peak), this can overshoot, so it estimates inter-sample peaks
   const peakDb=20*Math.log10(Math.max(1e-9,peak));
   const tpDb=20*Math.log10(Math.max(1e-9,tp));
   const lufs=-0.691+10*Math.log10(Math.max(1e-12,sumSq/Math.max(1,n)));
-  let gain=1;if(peak>0.8912509)gain=0.8912509/peak;
+  let gain=1;if(tp>0.8912509)gain=0.8912509/tp; // gain by true peak, not sample peak: sample-peak gain left inter-sample peaks above 0 dBFS, which clip after Opus encoding
   return{peak:peak,peakDb:peakDb,truePeak:tp,truePeakDb:tpDb,lufs:lufs,gain:gain,gainDb:20*Math.log10(gain)};
 }
 function normalizedVideoBuffer(buf,gainInfo){
   if(gainInfo.gain>=1)return buf;
-  getCtx();
-  const out=actx.createBuffer(buf.numberOfChannels,buf.length,buf.sampleRate);
+  const octx=new (window.OfflineAudioContext||window.webkitOfflineAudioContext)(buf.numberOfChannels,buf.length,buf.sampleRate);
+  const out=octx.createBuffer(buf.numberOfChannels,buf.length,buf.sampleRate);
   for(let ch=0;ch<buf.numberOfChannels;ch++){
     const src=buf.getChannelData(ch),dst=out.getChannelData(ch);
     for(let i=0;i<src.length;i++)dst[i]=src[i]*gainInfo.gain;
@@ -3112,12 +3127,13 @@ async function exportScoreVideo(opts){
   if(window.SCORE&&typeof SCORE.sanitize==='function')SCORE.sanitize();
   const tracks=(S.score&&S.score.tracks)||[];
   if(!tracks.length){setStatus('Video export: score is empty');return null;}
+  if(S.isPlaying||(window.SCORE&&SCORE.isPlaying&&SCORE.isPlaying()))stopAllAudio(); // export replaces live sound, it does not record alongside it
   const ver=(document.title.match(/v\d+\.\d+/)||['v19.2'])[0];
   const dft=videoTitleDefaults();
   const meta={title:opts.title||dft.title,composer:opts.composer||dft.composer,credits:opts.credits||dft.credits,preset:opts.preset||dft.preset};
   S.score.title=meta.title;S.score.composer=meta.composer;S.score.credits=meta.credits;S.score.videoPreset=meta.preset;
   setStatus('Video export: rendering audio…');
-  const rendered=await renderScoreToWAV();
+  const rendered=await renderScoreToWAV(null,{staged:true}); // video export goes through the same gain staging as live
   const gainInfo=measureVideoGain(rendered);
   const audioBuf=normalizedVideoBuffer(rendered,gainInfo);
   const events=collectScoreNoteEvents();
@@ -3127,8 +3143,13 @@ async function exportScoreVideo(opts){
   if(!canvas)throw new Error('Visualiser canvas unavailable');
   const vStream=canvas.captureStream(30);
   const src=actx.createBufferSource();src.buffer=audioBuf;
-  const dest=actx.createMediaStreamDestination();src.connect(dest);
-  try{src.connect(actx.destination);}catch(e){}
+  const dest=actx.createMediaStreamDestination();
+  const rampG=actx.createGain();rampG.gain.value=0;src.connect(rampG);rampG.connect(dest); // fade-in ramp at tune start, applied here so the rendered buffer itself is untouched
+  // Silent export: audio goes only to the recorder's stream, never to the
+  // speakers, so the export does not depend on an output device or disturb
+  // anything else playing. The live AudioContext is still the muxer's
+  // clock for the audio track itself (browser MediaRecorder has no
+  // offline muxer), so this reduces, not removes, live reliance.
   const mixed=new MediaStream([...vStream.getVideoTracks(),...dest.stream.getAudioTracks()]);
   const candidates=['video/mp4;codecs="avc1.42E01E,mp4a.40.2"','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
   let mime='';candidates.forEach(m=>{if(!mime){try{if(MediaRecorder.isTypeSupported(m))mime=m;}catch(e){}}});
@@ -3137,23 +3158,27 @@ async function exportScoreVideo(opts){
   const stopped=new Promise(res=>{rec.onstop=res;});
   rec.start();
   await new Promise(r=>setTimeout(r,6000));
-  if(window.VIS)VIS.hideTitle();
+  if(window.VIS&&meta.preset!=='none')VIS.hideTitle(); // 'none' visualiser: the title card stays up for the whole tune
+  await new Promise(r=>setTimeout(r,300)); // warm-up: let the visualiser run and the encoder emit its first post-title frame before any sound, so the tune does not start over a frozen frame
   const t0=actx.currentTime+0.01;
+  rampG.gain.setValueAtTime(0,t0);rampG.gain.linearRampToValueAtTime(1,t0+0.5); // cleaner ramp up: 0.5 s fade from silence, instead of the first note hitting at full volume after 6 s of silence
+  if(audioBuf.duration>1.5){rampG.gain.setValueAtTime(1,t0+audioBuf.duration-1);rampG.gain.linearRampToValueAtTime(0,t0+audioBuf.duration);} // ease down over the last second, so the tune does not cut off at full volume
   src.start(t0);
-  const timers=events.map(ev=>{
+  const timers=meta.preset==='none'?[]:events.map(ev=>{
     const delay=Math.max(0,(t0-actx.currentTime)*1000+ev.t*1000);
     return setTimeout(()=>{if(window.VIS)window.VIS.note({hz:ev.hz,vel:ev.vel,voice:ev.voice,wave:ev.wave,color:ev.color,drum:!!ev.drum});},delay);
   });
-  await new Promise(res=>{src.onended=res;});
+  await Promise.race([new Promise(res=>{src.onended=res;}),new Promise(r=>setTimeout(r,audioBuf.duration*1000+2000))]); // wall-clock fallback: a stalled live source cannot hang the export past tune + 2 s
   try{rec.stop();}catch(e){}
   await stopped;
   timers.forEach(t=>clearTimeout(t));
+  if(window.VIS)VIS.hideTitle(); // video export complete: close the title overlay for every preset — 'none' never hid it at 6s, so without this it stayed up into the next VIS open
   if(window.VIS)VIS.setMode(0);
   const blob=new Blob(chunks,{type:rec.mimeType||'video/webm'});
   const ext=(rec.mimeType||'').indexOf('mp4')>=0?'mp4':'webm';
   const safe=(meta.title||'caloris').replace(/[^A-Za-z0-9]+/g,'_').replace(/^_+|_+$/g,'')||'caloris';
   downloadBlob(blob,safe+'_video.'+ext);
-  const info={mimeType:rec.mimeType,width:canvas.width,height:canvas.height,fps:30,title:meta.title,composer:meta.composer,credits:meta.credits,preset:meta.preset,version:ver,durationSec:6+audioBuf.duration,tuneSec:audioBuf.duration,peakDb:gainInfo.peakDb,truePeakDb:gainInfo.truePeakDb,lufsApprox:gainInfo.lufs,gainDb:gainInfo.gainDb,eventCount:events.length};
+  const info={mimeType:rec.mimeType,width:canvas.width,height:canvas.height,fps:30,title:meta.title,composer:meta.composer,credits:meta.credits,preset:meta.preset,version:ver,durationSec:6.3+audioBuf.duration,tuneSec:audioBuf.duration,peakDb:gainInfo.peakDb,truePeakDb:gainInfo.truePeakDb,lufsApprox:gainInfo.lufs,gainDb:gainInfo.gainDb,eventCount:events.length};
   exportScoreVideo.lastInfo=info;
   setStatus('Video exported: '+safe+'_video.'+ext+' · '+info.width+'x'+info.height+' · peak '+gainInfo.peakDb.toFixed(1)+' dBFS · gain '+gainInfo.gainDb.toFixed(1)+' dB');
   return info;
@@ -5521,7 +5546,8 @@ function buildApp(){
   // Master controls
   const masterRow=document.createElement('div');masterRow.style.cssText='display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;justify-content:center;align-items:center';
   const playBtn=document.createElement('button');playBtn.id='play-btn';playBtn.className='big';playBtn.textContent='\u25b6 Play';
-  playBtn.addEventListener('click',()=>{if(S.isPlaying){stopAllAudio();S.isPlaying=false;setStatus('\u25a0 Stopped');updateDynamicUI();render();}else{getCtx();startPatch(S.currentType);S.isPlaying=true;setStatus('Playing: '+S.configs[S.currentType].name);updateDynamicUI();render();}});
+  playBtn.addEventListener('click',()=>{if(S.isPlaying){stopAllAudio();S.isPlaying=false;setStatus('\u25a0 Stopped');updateDynamicUI();render();}else{getCtx();var _nt=actx.currentTime;masterGain.gain.cancelScheduledValues(_nt);masterGain.gain.setValueAtTime(0,_nt);masterGain.gain.linearRampToValueAtTime(S.midiOnlyMode?0:S.masterVol,_nt+1); // DAW rule, generally: never start playback at max — start at zero and bring the master up to its set level over 1 s
+startPatch(S.currentType);S.isPlaying=true;setStatus('Playing: '+S.configs[S.currentType].name);updateDynamicUI();render();}});
   const masterVolRow=document.createElement('div');masterVolRow.style.cssText='display:flex;gap:4px;align-items:center';
   const mvLbl=document.createElement('span');mvLbl.style.cssText='font-size:9px;opacity:.6';mvLbl.textContent='master';
   const mvSlider=document.createElement('input');mvSlider.type='range';mvSlider.min=0;mvSlider.max=1;mvSlider.step=.01;mvSlider.value=S.masterVol;mvSlider.style.cssText='width:80px;accent-color:#0f0;cursor:pointer';mvSlider.dataset.mastervolslider='1';mvSlider.setAttribute('aria-label','Master volume');
@@ -5544,7 +5570,7 @@ function buildApp(){
   const seqInfo=document.createElement('span');seqInfo.id='seq-info';seqInfo.style.cssText='font-size:9px;opacity:.6';
   seqHead.append(seqTitle,seqInfo);seqPanel.appendChild(seqHead);
   const seqRow1=div('row');
-  const seqBtn=document.createElement('button');seqBtn.id='seq-btn';seqBtn.className='btn-yellow big';seqBtn.textContent='\u25b6 Seq';seqBtn.disabled=true;seqBtn.addEventListener('click',()=>{if(seqRunning)stopSeq();else startSeq();});seqRow1.appendChild(seqBtn);
+  const seqBtn=document.createElement('button');seqBtn.id='seq-btn';seqBtn.className='btn-yellow big';seqBtn.textContent='\u25b6 Seq';seqBtn.disabled=true;seqBtn.addEventListener('click',()=>{if(seqRunning)stopSeq();else{if(!S.isPlaying){getCtx();var _nt=actx.currentTime;masterGain.gain.cancelScheduledValues(_nt);masterGain.gain.setValueAtTime(0,_nt);masterGain.gain.linearRampToValueAtTime(S.midiOnlyMode?0:S.masterVol,_nt+1);}startSeq();}}); /* DAW rule: a stopped start ramps up from zero; a sounding patch is left alone, so Seq does not dip it */ seqRow1.appendChild(seqBtn);
   const bpmSlider=makeSlider({label:'BPM',value:S.bpm,min:20,max:300,step:1,unit:' bpm',color:'#ff0',onInput:v=>{S.bpm=v;updateSeqInfo();},onCommit:()=>pushUndo()});bpmSlider.querySelector('input').dataset.bpmslider='1';
   const swingSlider=makeSlider({label:'Swing',value:S.swing,min:0,max:80,step:1,unit:'ms',color:'#f80',onInput:v=>{S.swing=v;updateSeqInfo();},onCommit:()=>pushUndo()});swingSlider.querySelector('input').dataset.swingslider='1';
   const bpmWrap=document.createElement('div');bpmWrap.style.cssText='flex:1;min-width:180px';bpmWrap.append(bpmSlider,swingSlider);seqRow1.appendChild(bpmWrap);seqPanel.appendChild(seqRow1);
@@ -5623,7 +5649,7 @@ app.appendChild(seqPanel);
   const chainTitle=document.createElement('span');chainTitle.textContent='ARRANGEMENT CHAIN';
   const chainTransport=document.createElement('span');chainTransport.style.cssText='display:flex;gap:4px;align-items:center';
   const chainPlayBtn=document.createElement('button');chainPlayBtn.id='chain-play-btn';chainPlayBtn.textContent='\u25b6 Play Chain';chainPlayBtn.style.cssText='font-size:11px;font-weight:bold;padding:4px 10px;border-width:2px;border-color:#0fa;color:#0fa';
-  chainPlayBtn.addEventListener('click',()=>{if(S.chainPlaying)stopChain();else{if(!S.chainList.length){setStatus('Chain empty \u2014 add patches first');return;}if(!S.isPlaying){getCtx();startPatch(S.currentType);S.isPlaying=true;startSeq();}startChain();}});
+  chainPlayBtn.addEventListener('click',()=>{if(S.chainPlaying)stopChain();else{if(!S.chainList.length){setStatus('Chain empty \u2014 add patches first');return;}if(!S.isPlaying){getCtx();var _nt=actx.currentTime;masterGain.gain.cancelScheduledValues(_nt);masterGain.gain.setValueAtTime(0,_nt);masterGain.gain.linearRampToValueAtTime(S.midiOnlyMode?0:S.masterVol,_nt+1);startPatch(S.currentType);S.isPlaying=true;startSeq();}startChain();}});
   const chainLoopBtn=document.createElement('button');chainLoopBtn.id='chain-loop-btn';chainLoopBtn.textContent='loop';chainLoopBtn.style.cssText='font-size:9px;padding:2px 6px;border-color:#0fa;color:#0fa;background:rgba(0,255,170,0.08)';chainLoopBtn.title='Toggle chain loop';chainLoopBtn.addEventListener('click',()=>{S.chainLoop=!S.chainLoop;updateDynamicUI();});
   chainTransport.append(chainPlayBtn,chainLoopBtn);chainHead.append(chainTitle,chainTransport);chainPanel.appendChild(chainHead);
   const chainBody=document.createElement('div');chainBody.id='chain-body';chainPanel.appendChild(chainBody);app.appendChild(chainPanel);
@@ -5635,7 +5661,7 @@ app.appendChild(seqPanel);
   const wpPlayBtn=document.createElement('button');wpPlayBtn.id='wp-play-btn';wpPlayBtn.textContent='\u25b6 WP';wpPlayBtn.style.cssText='font-size:9px;border-color:#ff0;color:#ff0;padding:1px 6px';
   wpPlayBtn.addEventListener('click',()=>{
     if(S.weightedPoolActive){stopWeightedPool();wpPlayBtn.style.borderColor='#ff0';wpPlayBtn.style.color='#ff0';wpPlayBtn.textContent='\u25b6 WP';setStatus('Weighted pool stopped');}
-    else{if(!S.weightedPool.length){setStatus('Add patches to pool first');return;}if(!S.isPlaying){getCtx();startPatch(S.currentType);S.isPlaying=true;updateDynamicUI();}startWeightedPool();wpPlayBtn.style.borderColor='#f00';wpPlayBtn.style.color='#f00';wpPlayBtn.textContent='\u25a0 WP';}
+    else{if(!S.weightedPool.length){setStatus('Add patches to pool first');return;}if(!S.isPlaying){getCtx();var _nt=actx.currentTime;masterGain.gain.cancelScheduledValues(_nt);masterGain.gain.setValueAtTime(0,_nt);masterGain.gain.linearRampToValueAtTime(S.midiOnlyMode?0:S.masterVol,_nt+1);startPatch(S.currentType);S.isPlaying=true;updateDynamicUI();}startWeightedPool();wpPlayBtn.style.borderColor='#f00';wpPlayBtn.style.color='#f00';wpPlayBtn.textContent='\u25a0 WP';}
   });
   wpHeadRow.append(wpTitle,wpPlayBtn);wpPanel.appendChild(wpHeadRow);
 
@@ -5760,7 +5786,7 @@ function wavSection(){
         bars=renderScoreToWAV.lastBars;name='score';
       }else{
         bars=Math.max(1,parseInt(barsInp.value)||8);
-        rendered=await renderToWAV(bars,p=>{wavProgress.value=p;},{patch:S.configs[S.currentType],mix:{drumVol:S.drumVol}});
+        rendered=await renderToWAV(bars,p=>{wavProgress.value=p;},{patch:S.configs[S.currentType],mix:{drumVol:S.drumVol},staged:true,trimKey:S.currentType});
         name=(S.configs[S.currentType].name||'caloris').replace(/\s+/g,'_');
       }
       const wav=encodeWAV(rendered);const wavName=withExportRoot(name)+'_'+bars+'bars.wav';downloadBlob(new Blob([wav],{type:'audio/wav'}),wavName);wavStatus.textContent='Done \u2014 '+bars+' bars \u00b7 '+(rendered.length/rendered.sampleRate).toFixed(1)+'s';setStatus('WAV rendered: '+wavName);}catch(e){wavStatus.textContent='Error: '+e.message;}wavBtn.disabled=false;wavProgress.style.display='none';});
@@ -5777,7 +5803,7 @@ function wavSection(){
         bars=renderScoreToWAV.lastBars;name='score';
       }else{
         bars=Math.max(1,parseInt(barsInp.value)||8);
-        rendered=await renderToWAV(bars,p=>{wavProgress.value=p;},{patch:S.configs[S.currentType],mix:{drumVol:S.drumVol}});
+        rendered=await renderToWAV(bars,p=>{wavProgress.value=p;},{patch:S.configs[S.currentType],mix:{drumVol:S.drumVol},staged:true,trimKey:S.currentType});
         name=(S.configs[S.currentType].name||'caloris').replace(/\s+/g,'_');
       }
       const mp3=encodeMP3(rendered);const mp3Name=withExportRoot(name)+'_'+bars+'bars.mp3';downloadBlob(mp3,mp3Name);wavStatus.textContent='Done \u2014 '+bars+' bars MP3 \u00b7 '+(rendered.length/rendered.sampleRate).toFixed(1)+'s';setStatus('MP3 rendered: '+mp3Name);}catch(e){wavStatus.textContent='Error: '+e.message;}mp3Btn.disabled=false;wavProgress.style.display='none';});
@@ -7346,6 +7372,11 @@ var v={t:0,events:[],voices:{},step:-1,beatMs:500,bpm:60,playing:false,sting:'',
 
 /* ── preset registry ── */
 var VIS_PRESETS={
+none:{
+  name:'None',
+  init:function(p){},
+  frame:function(vv,g2,dt,evts){g2.fillStyle='#000';g2.fillRect(0,0,W,H);},
+},
 bloom:{
   name:'Bloom',
   init:function(p){p.parts=[];p.lastStep=-1;p.pulse=0;},
@@ -7890,7 +7921,7 @@ function setStatusSafe(m){if(typeof setStatus==='function')setStatus(m);}
 
 /* ── state ── */
 var selClip=null; /* {trackId, clipId} */
-var playing=false,prevType=null,_lastBar=-1;
+var playing=false,prevType=null,_lastBar=-1;var precomputeGain=false,_playTok=0; // precompute gain toggle, default off: when on, Score play renders offline first and measures peak/true peak, then ramps to masterVol x gain; when off, Score play starts immediately and ramps to masterVol
 var liveOsc=[],baseVol=[],curClip=[];
 var following=true,dragging=false,endStopping=false;
 
@@ -8000,6 +8031,21 @@ function play(){
   if(playing)stop();
   getCtx();
   if(S.isPlaying){stopAllAudio();S.isPlaying=false;}
+  if(precomputeGain){
+    _playTok++;var _ptok=_playTok;
+    setStatusSafe('Score: computing gain…');
+    (async function(){
+      var _gain=1,_gainDb=0;
+      try{var _rendered=await renderScoreToWAV();var _gi=measureVideoGain(_rendered);_gain=_gi.gain;_gainDb=_gi.gainDb;}
+      catch(e){_gain=1;_gainDb=0;}
+      if(_ptok!==_playTok)return; // stopped while computing: do not start playback
+      startScorePlayback(tracks,_gain,_gainDb);
+    })();
+    return;
+  }
+  startScorePlayback(tracks,1,0);
+}
+function startScorePlayback(tracks,_gain,_gainDb){
   prevType=S.currentType;
   var voscs=tracks.map(function(t){
     var tim=oscCfg(t.timbre);
@@ -8024,11 +8070,13 @@ function play(){
   for(var _si=0;_si<_expBars.length;_si++){if(_expBars[_si]===startBar){_foundStart=true;break;}_startExp+=meterStepsAtBar(_expBars[_si]);}
   startOff=_foundStart?_startExp:meterStepForBar(startBar);_lastPos=startBar;_endTok++;
   S.isPlaying=true;playing=true;
+  if(typeof masterGain!=='undefined'&&masterGain){var _nt=actx.currentTime,_tg=S.midiOnlyMode?0:S.masterVol*_gain;masterGain.gain.cancelScheduledValues(_nt);masterGain.gain.setValueAtTime(0,_nt);masterGain.gain.linearRampToValueAtTime(_tg,_nt+1);} // score start eases up over 1 s from zero to the set level (or the precomputed safe level when the toggle is on), never at max on the first note
   startSeq();
-  setStatusSafe('Score playing · '+tracks.length+' tracks'+(startBar>0?' · from bar '+(startBar+1):''));
+  setStatusSafe('Score playing · '+tracks.length+' tracks'+(startBar>0?' · from bar '+(startBar+1):'')+(_gain<1?' · gain '+_gainDb.toFixed(1)+' dB':''));
   paintTransport();
 }
 function stop(){
+  _playTok++;
   if(!playing)return;
   playing=false;_expBars=null;_liveScoreSrcBar=null;S._scoreSrcBar=null;
   stopSeq();
@@ -8038,6 +8086,7 @@ function stop(){
   });
   activeGroups=[];
   liveOsc=[];baseVol=[];curClip=[];
+  if(typeof masterGain!=='undefined'&&masterGain&&actx){var _rt=actx.currentTime;masterGain.gain.cancelScheduledValues(_rt);masterGain.gain.setTargetAtTime(S.midiOnlyMode?0:S.masterVol,_rt,0.05);} // restore full gain while silent, so a faded-out score never leaves the next patch silent
   S.isPlaying=false;
   if(S.currentType==='__score'){
     var keys=Object.keys(S.configs).filter(function(k){return k!=='__score';});
@@ -8075,8 +8124,8 @@ function onStep(step,absStep){
      tail so release/delay/reverb aren't chopped; the token stops a stale timer killing a quick restart. */
   var endAuto=!(S.score.endBar>0),endB=endBars();
   if(!S.score.loop&&((_expBars&&_totExp>0&&absStep>=_totExp)||(!_expBars&&endB>0&&pos>=endB))){ /* end reached: silence, then stop outside the tick */
-    for(var qi=0;qi<liveOsc.length;qi++)liveOsc[qi].volume=0;
-    if(!endStopping){endStopping=true;var _tok=_endTok;setTimeout(function(){if(playing&&_tok===_endTok)stop();},endAuto?1500:0);}
+    if(!endStopping){endStopping=true;var _tok=_endTok;if(typeof masterGain!=='undefined'&&masterGain&&actx){var _et=actx.currentTime;masterGain.gain.cancelScheduledValues(_et);masterGain.gain.setValueAtTime(masterGain.gain.value,_et);masterGain.gain.linearRampToValueAtTime(0,_et+1);} /* score end eases down over 1 s under the master fade, instead of cutting voices to silence instantly; stop() kills them after the fade */
+    setTimeout(function(){if(playing&&_tok===_endTok)stop();},1000);}
     return;
   }
   for(var ti=0;ti<S.score.tracks.length;ti++){
@@ -8191,15 +8240,16 @@ function renderEditor(container,t,c,rerender){
   lr.appendChild(ls);ed.appendChild(lr);
   ls.addEventListener('change',function(){
     var v=ls.value.split('\t');if(v.length<2)return;
+    if(t.locked){setStatusSafe('Track locked \u2014 unlock to edit');return;}
     if(typeof pushUndo==='function')pushUndo();
     c.loop={patchKey:v[0],oscIdx:parseInt(v[1],10)};
     if(playing)curClip=curClip.map(function(){return null;}); /* v17.9: re-copy the pattern next step instead of at the next clip boundary */
     rerender();
   });
-  ed.appendChild(numRow('start bar',c.startBar+1,1,1,function(v){c.startBar=Math.max(0,Math.round(v)-1);},rerender));
-  ed.appendChild(numRow('bars',c.bars,1,1,function(v){c.bars=Math.max(1,Math.round(v));},rerender));
-  ed.appendChild(numRow('fade in',c.fadeIn,0,0.5,function(v){c.fadeIn=Math.max(0,v);},rerender));
-  ed.appendChild(numRow('fade out',c.fadeOut,0,0.5,function(v){c.fadeOut=Math.max(0,v);},rerender));
+  ed.appendChild(numRow('start bar',c.startBar+1,1,1,function(v){if(t.locked){setStatusSafe('Track locked \u2014 unlock to edit');return;}c.startBar=Math.max(0,Math.round(v)-1);},rerender));
+  ed.appendChild(numRow('bars',c.bars,1,1,function(v){if(t.locked){setStatusSafe('Track locked \u2014 unlock to edit');return;}c.bars=Math.max(1,Math.round(v));},rerender));
+  ed.appendChild(numRow('fade in',c.fadeIn,0,0.5,function(v){if(t.locked){setStatusSafe('Track locked \u2014 unlock to edit');return;}c.fadeIn=Math.max(0,v);},rerender));
+  ed.appendChild(numRow('fade out',c.fadeOut,0,0.5,function(v){if(t.locked){setStatusSafe('Track locked \u2014 unlock to edit');return;}c.fadeOut=Math.max(0,v);},rerender));
   var dr=document.createElement('div');dr.style.cssText='display:flex;gap:6px;margin-top:4px;flex-wrap:wrap';
   var from=document.createElement('button');from.textContent='\u25b6 from here';
   from.title='Play the score from this clip\u2019s first bar';
@@ -8234,6 +8284,7 @@ function renderEditor(container,t,c,rerender){
   var del=document.createElement('button');del.textContent='delete clip';
   del.style.cssText='font-size:9px;border-color:#f00a;color:#f00b';
   del.addEventListener('click',function(){
+    if(t.locked){setStatusSafe('Track locked \u2014 unlock to delete');return;}
     if(typeof pushUndo==='function')pushUndo();
     t.clips=t.clips.filter(function(x){return x!==c;});selClip=null;rerender();
   });
@@ -8382,7 +8433,23 @@ function render(container){
   lp.addEventListener('click',function(){S.score.loop=!S.score.loop;paintToggles();setStatusSafe('Score loop '+(S.score.loop?'on':'off'));});
   fl.addEventListener('click',function(){following=!following;paintToggles();});
   paintToggles();
-  tr.appendChild(pb);tr.appendChild(rw);tr.appendChild(lp);tr.appendChild(fl);
+  var pg=document.createElement('button');pg.title='Precompute gain: when on, Score play first renders the score offline and measures peak/true peak, then ramps up to masterVol x gain. When off (default), Score play starts immediately and ramps up to masterVol. Precompute is slower and needs processor power, especially for long scores.';
+  var paintPg=function(){var on=!!precomputeGain;pg.textContent=on?'precompute \u2713':'precompute';pg.style.cssText='font-size:10px;padding:3px 8px;margin-left:4px;touch-action:manipulation;border-color:'+(on?'#0fa':'#0fa4')+';color:'+(on?'#000':'#0fa');pg.style.background=on?'#0fa':'transparent';};
+  pg.addEventListener('click',function(){precomputeGain=!precomputeGain;paintPg();setStatusSafe('Precompute gain '+(precomputeGain?'on \u2014 Score play will render first, then play at the measured safe gain':'off \u2014 Score play starts immediately'));});
+  paintPg();
+  var lk=document.createElement('button');lk.title='Lock all tracks: clips cannot be moved, resized, added, duplicated, split or deleted. Tap again to unlock all.';
+  var _allLocked=S.score.tracks.length>0&&S.score.tracks.every(function(x){return x.locked;});
+  lk.textContent=_allLocked?'\uD83D\uDD13 unlock all':'\uD83D\uDD12 lock all';
+  lk.style.cssText='font-size:10px;padding:3px 8px;margin-left:4px;touch-action:manipulation;border-color:'+(_allLocked?'#0ff':'#0ff4')+';color:'+(_allLocked?'#0ff':'#0ff8')+';background:'+(_allLocked?'#0ff2':'transparent');
+  lk.addEventListener('click',function(){
+    if(!S.score.tracks.length){setStatusSafe('Score: add a track first');return;}
+    var allLocked=S.score.tracks.every(function(x){return x.locked;});
+    if(typeof pushUndo==='function')pushUndo();
+    S.score.tracks.forEach(function(x){x.locked=!allLocked;});
+    setStatusSafe(allLocked?'All tracks unlocked':'All tracks locked \u2014 clips cannot be moved, resized, added, duplicated, split or deleted');
+    rerender();
+  });
+  tr.appendChild(pb);tr.appendChild(rw);tr.appendChild(lp);tr.appendChild(fl);tr.appendChild(pg);tr.appendChild(lk);
   /* v17.9: start-from-bar + zoom */
   var frl=document.createElement('span');frl.textContent='from';frl.style.cssText='font-size:9px;color:#0f0a;margin-left:8px';
   var fr=document.createElement('input');fr.type='number';fr.min=1;fr.step=1;fr.value=startBar+1;
