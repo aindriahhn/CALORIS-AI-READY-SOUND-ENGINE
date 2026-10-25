@@ -1,8 +1,12 @@
-# CALORIS Patch JSON Schema (v14)
+# CALORIS Patch JSON Schema (v19.3)
 
 Import path: **"◀ Paste" / "◀ File"** in the JSON section ("Paste CALORIS JSON here…").
-Contract extracted from `doImport()` in `CALORIS_v14_0_adsa.html`. Feed this file —
-not the 295KB app — to a composer (human or agent).
+Contract for the v19.3 build (`CALORIS_v19_3_juno.html` and its siblings).
+Feed this file — not the ~723KB app — to a composer (human or agent).
+The same text is embedded in the v19.3 build's SCHEMA / HELP panel
+(`CALORIS_SCHEMA_TEXT`), so the in-file copy and this standalone file
+are the same document. A machine-readable companion is
+`CALORIS_patch_schema.json` (JSON Schema draft 2020-12, v19.3).
 
 ## Top level
 
@@ -38,6 +42,10 @@ not the 295KB app — to a composer (human or agent).
 - `meterChanges` (v18): optional array of time-signature changes, one
   entry per change: `{"bar": 0, "num": 4, "den": 4, "steps": 16}`. See
   **Meter changes (v18)** below for the full contract.
+- `tempoMap` (v19.2, also `score.tempoMap`): optional array of
+  `{bar, bpm}`, linearly interpolated between points, flat outside
+  the first and last point. See **Tempo curves** under
+  **Music theory completion (v19.2)** below.
 
 ## key
 
@@ -178,7 +186,8 @@ import. Defaults applied to a voice whose field is missing or invalid:
   `key.rootNote`. `vel` 0–1, `prob` 0–100.
 - `melodyOctave`: default 3 (editor hint; playback uses each slot's `octave`).
 - `gateTime`: note length as fraction of step (default 1).
-- `rateMult`: polymeter multiplier (default 1).
+- `rateMult`: pattern speed multiplier (default 1). Above 1 it subdivides each grid step into round(rateMult) sub-steps, each playing the next pattern step, so every note sounds and gates/durations shrink by 1/N. At or below 1 the pattern is read at `floor(absStep \u00d7 rateMult)` (0.5 holds each step across two grid steps).
+- `subSwing`: 0–0.75 (default 0). Only used when `rateMult` is above 1: every second sub-step is delayed by this fraction of a sub-step (0.33 triplet feel, 0.5 hard shuffle). A pattern key, so score clips carry it.
 - `muted`: bool. `label`: string.
 - Kit voices (`type: 'kit'` patches only): `stepData` = per-step
   `{on:0/1, vel:1, pitch:0, decay:1}`. Auto-created when missing — omit it
@@ -200,6 +209,9 @@ import. Defaults applied to a voice whose field is missing or invalid:
   `lfo2Rate` .3, `lfo2Depth` 0, `lfo2Target` pitch|volume|filter|pan.
 - FM (`fmEnabled` and `fmDepth` > 0): `fmRatio` 2, `fmDepth` in Hz.
 - `glide`: portamento seconds (0 = off).
+- `glideMode` (v19.3): `'capped'` (default when missing or any other value)
+  or `'full'`. Capped slides finish within 0.8x the step; full is a
+  continuous glissando across steps. See **Glide fix and full glissando (v19.3)** below.
 
 ## Import failure modes
 
@@ -303,7 +315,7 @@ SCORE system and `renderScoreToWAV` in `CALORIS_v17_11_5_bench_1.html`).
   the one with the latest `startBar` wins. Where no clip covers a
   position, the track is **silent**: gaps are drop-outs, not holds.
 - **Phase follows the global step counter, not the clip start.** A
-  pattern is read at `floor(absStep × rateMult) % patternLength`, where
+  pattern is read at `floor(absStep × rateMult) % patternLength` (rateMult above 1: sub-step j of N = round(rateMult) reads `(absStep × N + j) % patternLength`), where
   `absStep` is the monotonic global step running from the score's
   start. With a uniform meter that step is `bar × stepCount + step`;
   with meter changes (v18) it is `meterStepForBar(bar) + step` — see
@@ -376,7 +388,7 @@ and in MIDI export — come from that timeline instead of from
   Jerusalem 133/74/74).
 - **What meter does and does not move.** Only bar boundaries move.
   Patterns stay step-indexed: a pattern is still read at
-  `floor(absStep × rateMult) % patternLength`, with `absStep` the
+  `floor(absStep × rateMult) % patternLength` (rateMult above 1: sub-step j of N = round(rateMult) reads `(absStep × N + j) % patternLength`), with `absStep` the
   monotonic global step. A meter change mid-pattern does not restart
   or re-phase the pattern; it only changes where the next bar starts.
   A score clip starting at a bar where the meter changes starts at
@@ -569,7 +581,7 @@ export multiply that velocity further (see below).
   `meterStepsAtBar(bar)`, and a note's tick is
   `absStep × ticks-per-step`, where `absStep` is the meter offset
   (`meterStepForBar(bar) + step`). Notes come from the melody slot at
-  `floor(absStep × rateMult) % patternLength` — the same phase rule
+  `floor(absStep × rateMult) % patternLength` (rateMult above 1: sub-step j of N = round(rateMult) reads `(absStep × N + j) % patternLength`) — the same phase rule
   as live playback, so a clip starting after a meter change phases
   exactly as it sounds. Kit/drum voices in a score use `stepData`
   where present (GM drum note, channel 10 unless the voice overrides
